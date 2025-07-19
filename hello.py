@@ -225,44 +225,108 @@ class VoronoiGUI:
         # 不共線，正常求三條中垂線
         vertex = self.calculate_circumcenter(p1, p2, p3)
         if vertex:
-            vd.add_vertex(vertex)
-            for idx, (a, b) in enumerate([(p1, p2), (p2, p3), (p3, p1)]):
-                start, end = VoronoiEdge.get_perpendicular_bisector_on_canvas(a, b)
-                third = [p1, p2, p3][(idx + 2) % 3]
+            # 計算三邊長
+            def dist2(a, b):
+                return (a.x - b.x)**2 + (a.y - b.y)**2
+            a2 = dist2(p2, p3)
+            b2 = dist2(p1, p3)
+            c2 = dist2(p1, p2)
+            a = a2 ** 0.5
+            b = b2 ** 0.5
+            c = c2 ** 0.5
 
-                # 計算單位向量
-                def unit_vector(p_from, p_to):
-                    dx = p_to.x - p_from.x
-                    dy = p_to.y - p_from.y
-                    length = (dx**2 + dy**2) ** 0.5
-                    if length == 0:
-                        return 0, 0
-                    return dx / length, dy / length
+            # 計算三角形三個角的 cos 值
+            # 角A在p1，角B在p2，角C在p3
+            cosA = (b2 + c2 - a2) / (2 * b * c)
+            cosB = (a2 + c2 - b2) / (2 * a * c)
+            cosC = (a2 + b2 - c2) / (2 * a * b)
 
-                # VtoS: vertex朝start方向走一單位長度
-                ux_s, uy_s = unit_vector(vertex, start)
-                VtoS = VoronoiVertex(vertex.x + ux_s, vertex.y + uy_s)
-                # VtoE: vertex朝end方向走一單位長度
-                ux_e, uy_e = unit_vector(vertex, end)
-                VtoE = VoronoiVertex(vertex.x + ux_e, vertex.y + uy_e)
-
-                # 比較VtoS和VtoE距離third誰比較近
-                dist_VtoS_third = (VtoS.x - third.x)**2 + (VtoS.y - third.y)**2
-                dist_VtoE_third = (VtoE.x - third.x)**2 + (VtoE.y - third.y)**2
-
-                if dist_VtoS_third < dist_VtoE_third:
-                    new_start = vertex
-                    new_end = end
+            if cosA < 0 or cosB < 0 or cosC < 0:
+                # 情況1：鈍角三角形
+                # 判斷哪個點為鈍角頂點
+                if cosA < 0:
+                    obtuse_idx = 0
+                    obtuse_point = p1
+                elif cosB < 0:
+                    obtuse_idx = 1
+                    obtuse_point = p2
                 else:
-                    new_start = vertex
-                    new_end = start
+                    obtuse_idx = 2
+                    obtuse_point = p3
+                # 針對鈍角三角形做特殊處理
+                vd.add_vertex(vertex)
+                pairs = [(p1, p2), (p2, p3), (p3, p1)]
+                points_list = [p1, p2, p3]
+                for idx, (a, b) in enumerate(pairs):
+                    start, end = VoronoiEdge.get_perpendicular_bisector_on_canvas(a, b)
+                    third = points_list[(idx + 2) % 3]
+                    # 計算單位向量
+                    def unit_vector(p_from, p_to):
+                        dx = p_to.x - p_from.x
+                        dy = p_to.y - p_from.y
+                        length = (dx**2 + dy**2) ** 0.5
+                        if length == 0:
+                            return 0, 0
+                        return dx / length, dy / length
+                    ux_s, uy_s = unit_vector(vertex, start)
+                    VtoS = VoronoiVertex(vertex.x + ux_s, vertex.y + uy_s)
+                    ux_e, uy_e = unit_vector(vertex, end)
+                    VtoE = VoronoiVertex(vertex.x + ux_e, vertex.y + uy_e)
+                    mx = (a.x + b.x) / 2
+                    my = (a.y + b.y) / 2
+                    dist_VtoS_m = (VtoS.x - mx)**2 +(VtoS.y - my)**2
+                    dist_VtoE_m = (VtoE.x - mx)**2 + (VtoE.y - my)**2
 
-                edge = VoronoiEdge(a, b)
-                edge.set_start_vertex(new_start)
-                edge.set_end_vertex(new_end)
-                vd.add_vertex(new_start)
-                vd.add_vertex(new_end)
-                vd.add_edge(edge)
+                    #鈍角對面的中垂線需反向
+                    if obtuse_point not in (a, b):
+                        if dist_VtoS_m < dist_VtoE_m:
+                            start, end = VtoS, end
+                        else:
+                            start, end = VtoE, start
+                    #其餘兩條保持不變
+                    else:
+                        if dist_VtoS_m > dist_VtoE_m:
+                            start, end = VtoS, end
+                        else:
+                            start, end = VtoE, start
+                    edge = VoronoiEdge(a, b)
+                    edge.set_start_vertex(start)
+                    edge.set_end_vertex(end)
+                    vd.add_vertex(start)
+                    vd.add_vertex(end)
+                    vd.add_edge(edge)
+            else:
+                # 情況2：銳角三角形，原本邏輯不變
+                vd.add_vertex(vertex)
+                for idx, (a, b) in enumerate([(p1, p2), (p2, p3), (p3, p1)]):
+                    start, end = VoronoiEdge.get_perpendicular_bisector_on_canvas(a, b)
+                    third = [p1, p2, p3][(idx + 2) % 3]
+                    # 計算單位向量
+                    def unit_vector(p_from, p_to):
+                        dx = p_to.x - p_from.x
+                        dy = p_to.y - p_from.y
+                        length = (dx**2 + dy**2) ** 0.5
+                        if length == 0:
+                            return 0, 0
+                        return dx / length, dy / length
+                    ux_s, uy_s = unit_vector(vertex, start)
+                    VtoS = VoronoiVertex(vertex.x + ux_s, vertex.y + uy_s)
+                    ux_e, uy_e = unit_vector(vertex, end)
+                    VtoE = VoronoiVertex(vertex.x + ux_e, vertex.y + uy_e)
+                    dist_VtoS_third = (VtoS.x - third.x)**2 + (VtoS.y - third.y)**2
+                    dist_VtoE_third = (VtoE.x - third.x)**2 + (VtoE.y - third.y)**2
+                    if dist_VtoS_third < dist_VtoE_third:
+                        new_start = vertex
+                        new_end = end
+                    else:
+                        new_start = vertex
+                        new_end = start
+                    edge = VoronoiEdge(a, b)
+                    edge.set_start_vertex(new_start)
+                    edge.set_end_vertex(new_end)
+                    vd.add_vertex(new_start)
+                    vd.add_vertex(new_end)
+                    vd.add_edge(edge)
         return vd
     
     def is_between(a, b, c):
@@ -345,7 +409,7 @@ class VoronoiGUI:
                 count = int(line)
                 i += 1
             except ValueError:
-                messagebox.showwarning("Warning", f"Invalid point count at line {i+1}")
+                messagebox.showwarning("Warning", "Invalid point count at line {i+1}")
                 i += 1
                 continue
             
