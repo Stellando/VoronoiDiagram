@@ -36,6 +36,8 @@ class VoronoiEdge:
     def set_infinite(self):
         self.is_infinite = True
 
+
+    #計算中垂線
     @staticmethod
     def get_perpendicular_bisector_on_canvas(p1, p2, canvas_width=600, canvas_height=600):
         # 計算中垂線的中點
@@ -195,6 +197,8 @@ class VoronoiGUI:
         vd.add_edge(edge)
         return vd
 
+    #三個點的處理
+    #處理鈍角和銳角三角形的情況
     def build_voronoi_three_points(self, points):
         vd = VoronoiDiagram()
         vd.points = points
@@ -329,8 +333,10 @@ class VoronoiGUI:
                     vd.add_edge(edge)
         return vd
     
+
+    # 判斷點c是否在a和b之間（線段內部）
     def is_between(a, b, c):
-        # 判斷點c是否在a和b之間（線段內部）
+        
         cross = (c.x - a.x) * (b.x - a.x) + (c.y - a.y) * (b.y - a.y)
         if cross < 0:
             return False
@@ -339,8 +345,9 @@ class VoronoiGUI:
         return dist_ac <= dist_ab
     
 
+    # 計算三點的外心（中垂線交點）
     def calculate_circumcenter(self, p1, p2, p3):
-        # 計算三點的外心（中垂線交點）
+        
         # 使用兩條中垂線的交點公式
         ax, ay = p1.x, p1.y
         bx, by = p2.x, p2.y
@@ -355,6 +362,29 @@ class VoronoiGUI:
         
         return VoronoiVertex(ux, uy) 
     
+
+    #合併左右子問題
+    def merge_voronoi(self, left_vd, right_vd):
+        merged_vd = VoronoiDiagram()
+        merged_vd.points = left_vd  # 將左右點集合併
+        merged_vd.points.extend(left_vd.points)
+        merged_vd.points.extend(right_vd.points)
+        
+        # 合併邊和頂點（這裡僅為示例，實際需計算新的邊和頂點）
+        merged_vd.edges.extend(left_vd.edges)
+        merged_vd.edges.extend(right_vd.edges)
+        merged_vd.vertices.extend(left_vd.vertices)
+        merged_vd.vertices.extend(right_vd.vertices)
+        
+        # 簡化合併邏輯：找到左右子集之間的分界線並構建新的中垂線
+        left_max_x = max(p.x for p in left_vd.points)
+        right_min_x = min(p.x for p in right_vd.points)
+        mid_x = (left_max_x + right_min_x) / 2
+        
+        # 這裡需要實現真正的合併鏈計算，暫時用簡單的分界線作為示例
+        # 實際上需要追蹤左右 Voronoi Diagram 的邊界，構建新的邊和頂點
+        
+        return merged_vd
     #繪製部分
     def draw_voronoi(self):
         self.canvas.delete("all")  # 清空畫布
@@ -385,6 +415,8 @@ class VoronoiGUI:
         # 執行一步 merge，顯示左右子問題
         pass
     
+
+    #讀檔
     def load_file(self):
         file_path = filedialog.askopenfilename()
         if not file_path:
