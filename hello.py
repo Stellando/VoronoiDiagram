@@ -552,7 +552,7 @@ class VoronoiGUI:
                 merged_vd.edges.append(current_midAB)
                 
                 # 處理被碰撞的邊
-                self.truncate_intersected_edge(intersected_edge, new_cross, left_vd.points + right_vd.points, left_vd.points, right_vd.points)
+                self.truncate_intersected_edge(intersected_edge, new_cross, left_vd.points + right_vd.points, left_vd.points, right_vd.points, self.debug_left_hull, self.debug_right_hull, left_vd.edges + right_vd.edges)
                 
                 # 更新AB
                 updated = False
@@ -835,7 +835,7 @@ class VoronoiGUI:
             if point == B:
                 continue
                 
-            # 計算叉積：向量(next_A -> B) × 向量(next_A -> point)
+            # 計算外積：向量(next_A -> B) × 向量(next_A -> point)
             # 如果結果 < 0，表示point在next_A-B線段的下方（右側），這是我們要的
             # 如果結果 > 0，表示point在next_A-B線段的上方（左側），不符合上切線要求
             cross = self.cross_product(next_A, B, point)
@@ -868,10 +868,10 @@ class VoronoiGUI:
         return True
     
     def cross_product(self, p1, p2, p3):
-        """計算向量(p1->p2) × (p1->p3)的叉積"""
+        """計算向量(p1->p2) × (p1->p3)的外積"""
         return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x)
     
-    def truncate_intersected_edge(self, intersected_edge, cross_point, all_points, left_points=None, right_points=None):
+    def truncate_intersected_edge(self, intersected_edge, cross_point, all_points, left_points=None, right_points=None, left_hull=None, right_hull=None, all_edges=None):
         """截斷被碰撞的邊，根據是否為鈍角三角形採用不同邏輯"""
         bisected_points = intersected_edge.get_bisected_points()
         edge_site1, edge_site2 = bisected_points
@@ -951,7 +951,130 @@ class VoronoiGUI:
                             # end端X較大，保留cross到end
                             intersected_edge.set_start_vertex(VoronoiVertex(cross_point.x, cross_point.y))
                             print(f"右半邊：保留cross到X較大端 ({end_x:.2f}, end)")
+                    # 在這邊額外判斷消除邊的邏輯
+                    # 觀察midAB的X值 鈍角的X值以及外心的X值
+                    midAB_x = cross_point.x  # 使用cross_point的X值作為midAB的參考點
+                    obtuse_x = obtuse_vertex.x
+                    circumcenter_x = circumcenter.x
                     
+                    print(f"額外X值判斷 - midAB_X: {midAB_x:.2f}, 鈍角_X: {obtuse_x:.2f}, 外心_X: {circumcenter_x:.2f}")
+                    
+                    # 計算 (鈍角X - midABX) * (外心X - midABX)
+                    product = (obtuse_x - midAB_x) * (circumcenter_x - midAB_x)
+                    print(f"(鈍角X - midABX) * (外心X - midABX) = ({obtuse_x:.2f} - {midAB_x:.2f}) * ({circumcenter_x:.2f} - {midAB_x:.2f}) = {product:.2f}")
+                    
+                    if product < 0:
+                        print("乘積 < 0，檢查是否需要消除邊")
+                        
+                        # 檢查get_bisected_points回傳的兩點是否都不含鈍角
+                        bisected_points = intersected_edge.get_bisected_points()
+                        point1, point2 = bisected_points
+                        
+                        print(f"被碰撞邊的兩個生成點: ({point1.x}, {point1.y}) 和 ({point2.x}, {point2.y})")
+                        print(f"鈍角頂點: ({obtuse_vertex.x}, {obtuse_vertex.y})")
+                        
+                        # 檢查兩點是否都不是鈍角頂點
+                        point1_is_obtuse = (point1 == obtuse_vertex)
+                        point2_is_obtuse = (point2 == obtuse_vertex)
+                        
+                        if not point1_is_obtuse and not point2_is_obtuse:
+                            print("兩個生成點都不含鈍角頂點，消除整條邊")
+                            # 將邊的兩個端點都設為cross點，實質上消除整條邊
+                            intersected_edge.set_start_vertex(VoronoiVertex(cross_point.x, cross_point.y))
+                            intersected_edge.set_end_vertex(VoronoiVertex(cross_point.x, cross_point.y))
+                            print(f"已將邊的兩端都設為cross點 ({cross_point.x:.2f}, {cross_point.y:.2f})，實質上消除該邊")
+                        else:
+                            print("至少有一個生成點含有鈍角頂點，需要沿著凸包移動生成點")
+                            
+                            # 確定鈍角頂點屬於哪個凸包
+                            obtuse_in_left = obtuse_vertex in (left_points or [])
+                            obtuse_in_right = obtuse_vertex in (right_points or [])
+                            
+                            if obtuse_in_left and left_hull:
+                                print(f"鈍角頂點在左半邊凸包中")
+                                target_hull = left_hull
+                                hull_name = "左半邊"
+                            elif obtuse_in_right and right_hull:
+                                print(f"鈍角頂點在右半邊凸包中")
+                                target_hull = right_hull
+                                hull_name = "右半邊"
+                            else:
+                                print("無法確定鈍角頂點所屬凸包，使用正常處理")
+                                return
+                            
+                            # 找到鈍角頂點在凸包中的位置
+                            if obtuse_vertex not in target_hull:
+                                print("鈍角頂點不在對應凸包中，使用正常處理")
+                                return
+                            
+                            obtuse_index = target_hull.index(obtuse_vertex)
+                            print(f"鈍角頂點在{hull_name}凸包中的索引: {obtuse_index}")
+                            
+                            # 沿著凸包移動，尋找兩點皆不含鈍角的組合
+                            found_valid_pair = False
+                            max_search_steps = len(target_hull)  # 最多搜索整個凸包
+                            
+                            for step in range(1, max_search_steps):
+                                # 嘗試往前和往後移動
+                                for direction in [1, -1]:
+                                    new_index = (obtuse_index + direction * step) % len(target_hull)
+                                    candidate_point = target_hull[new_index]
+                                    
+                                    print(f"嘗試移動到凸包點 {step*direction}: ({candidate_point.x}, {candidate_point.y})")
+                                    
+                                    # 檢查新的兩點組合是否都不含鈍角
+                                    if point1_is_obtuse:
+                                        # point1是鈍角，用candidate_point替換point1
+                                        new_point1 = candidate_point
+                                        new_point2 = point2
+                                    elif point2_is_obtuse:
+                                        # point2是鈍角，用candidate_point替換point2
+                                        new_point1 = point1
+                                        new_point2 = candidate_point
+                                    else:
+                                        # 兩點都是鈍角的情況（理論上不應該發生）
+                                        continue
+                                    
+                                    # 檢查新組合是否都不含鈍角
+                                    new_point1_is_obtuse = (new_point1 == obtuse_vertex)
+                                    new_point2_is_obtuse = (new_point2 == obtuse_vertex)
+                                    
+                                    if not new_point1_is_obtuse and not new_point2_is_obtuse:
+                                        print(f"找到有效組合: ({new_point1.x}, {new_point1.y}) 和 ({new_point2.x}, {new_point2.y})")
+                                        
+                                        # 找到由這兩點產生的中垂線並消除它
+                                        # 在所有邊中尋找由這兩點產生的邊
+                                        target_edge = None
+                                        if all_edges:
+                                            for edge in all_edges:
+                                                if hasattr(edge, 'get_bisected_points'):
+                                                    edge_sites = edge.get_bisected_points()
+                                                    if ((edge_sites[0] == new_point1 and edge_sites[1] == new_point2) or 
+                                                        (edge_sites[0] == new_point2 and edge_sites[1] == new_point1)):
+                                                        target_edge = edge
+                                                        break
+                                        
+                                        if target_edge:
+                                            print(f"找到目標邊，消除該邊")
+                                            target_edge.set_start_vertex(VoronoiVertex(cross_point.x, cross_point.y))
+                                            target_edge.set_end_vertex(VoronoiVertex(cross_point.x, cross_point.y))
+                                            print(f"已消除由點({new_point1.x}, {new_point1.y})和({new_point2.x}, {new_point2.y})產生的中垂線")
+                                        else:
+                                            print("未找到對應的邊")
+                                        
+                                        found_valid_pair = True
+                                        break
+                                
+                                if found_valid_pair:
+                                    break
+                            
+                            if not found_valid_pair:
+                                print("沿凸包搜索未找到有效組合，使用正常處理")
+                        
+                        return
+                    else:
+                        print("乘積 > 0，沒事，繼續正常處理")
+
                     return
                 else:
                     print("被碰撞邊是鈍角對面的邊，保留cross到其他線的交點（使用正常邏輯）")
