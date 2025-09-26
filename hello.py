@@ -2,6 +2,22 @@ import tkinter as tk
 from tkinter import filedialog
 from tkinter import messagebox
 from datastructer import* 
+import copy
+
+# 儲存merge步驟狀態的類
+class MergeStep:
+    def __init__(self, step_number, description, voronoi_diagram, 
+                 left_hull=None, right_hull=None, merged_hull=None, 
+                 hyperplanes=None, debug_A=None, debug_B=None):
+        self.step_number = step_number
+        self.description = description
+        self.voronoi_diagram = copy.deepcopy(voronoi_diagram)  # 深拷貝VD狀態
+        self.left_hull = copy.deepcopy(left_hull) if left_hull else []
+        self.right_hull = copy.deepcopy(right_hull) if right_hull else []
+        self.merged_hull = copy.deepcopy(merged_hull) if merged_hull else []
+        self.hyperplanes = copy.deepcopy(hyperplanes) if hyperplanes else []
+        self.debug_A = copy.deepcopy(debug_A) if debug_A else None
+        self.debug_B = copy.deepcopy(debug_B) if debug_B else None
 
 
 # 主程式部分
@@ -19,14 +35,25 @@ class VoronoiGUI:
         # 用於調試顯示的變量
         self.debug_left_hull = []
         self.debug_right_hull = []
+        self.debug_merged_hull = []  # 新增：合併凸包
         self.debug_A = None
         self.debug_B = None
         
+        # UI控制變量
+        self.show_convex_hull = tk.BooleanVar(value=False)  # 預設不顯示凸包
+        self.show_merged_hull = tk.BooleanVar(value=False)  # 預設不顯示合併凸包
+        
+        # Step by step 功能
+        self.merge_steps = []  # 儲存每個merge步驟的狀態
+        self.current_step = -1  # 當前顯示的步驟，-1表示顯示完整結果
+        self.is_step_mode = False  # 是否處於step模式
+
         # 按鈕
         self.run_button = tk.Button(root, text="Run", command=self.run_voronoi)
         self.run_button.pack(side=tk.LEFT)
         self.step_button = tk.Button(root, text="Step by Step", command=self.step_voronoi)
         self.step_button.pack(side=tk.LEFT)
+        
         self.load_button = tk.Button(root, text="Load File", command=self.load_file)
         self.load_button.pack(side=tk.LEFT)
         self.clear_button = tk.Button(root, text="Clear Points", command=self.clear_points)
@@ -36,6 +63,17 @@ class VoronoiGUI:
         self.prev_button = tk.Button(root, text="Previous Group", command=self.prev_group)
         self.prev_button.pack(side=tk.LEFT)
         
+        # 切換顯示選項
+        self.hull_toggle = tk.Checkbutton(root, text="Show Convex Hull", 
+                                         variable=self.show_convex_hull, 
+                                         command=self.refresh_display)
+        self.hull_toggle.pack(side=tk.LEFT)
+        
+        self.merged_hull_toggle = tk.Checkbutton(root, text="Show Merged Hull", 
+                                                variable=self.show_merged_hull, 
+                                                command=self.refresh_display)
+        self.merged_hull_toggle.pack(side=tk.LEFT)
+        
         # 滑鼠點擊事件
         self.canvas.bind("<Button-1>", self.add_point)
     
@@ -44,16 +82,25 @@ class VoronoiGUI:
         self.points.append((x, y))
         self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="black")
     
+    def refresh_display(self):
+        """重新繪製顯示內容"""
+        if hasattr(self, 'vd') and self.vd:
+            self.draw_voronoi()
+    
+    
     #主演算法部分
     def run_voronoi(self):
         if not self.points:
             messagebox.showwarning("Warning", "No points to process")
             return
         
-        # 清空之前的 Voronoi Diagram
+        # 清空之前的 Voronoi Diagram 和步驟資料
         self.vd.edges.clear()
         self.vd.vertices.clear()
         self.vd.point_to_edges.clear()
+        self.merge_steps.clear()
+        self.current_step = -1
+        self.is_step_mode = False
         
         # 構建 Voronoi Diagram
         points = [Point(x, y) for x, y in self.points]  # 轉換為 Point 物件
@@ -63,7 +110,10 @@ class VoronoiGUI:
         self.draw_voronoi()
 
     # 建立Voronoi Diagram
-    def build_voronoi(self, points):
+    def build_voronoi(self, points, record_steps=False, step_counter=None):
+        if step_counter is None:
+            step_counter = [0]  # 使用列表來確保可以修改
+            
         vd = VoronoiDiagram()
         vd.points = points  # 設置點集
         for point in points:
@@ -90,11 +140,11 @@ class VoronoiGUI:
             right_points = sorted_points[mid:]     # 右半部分（X座標較大）
             
             # Conquer：遞迴處理左右兩部分
-            left_vd = self.build_voronoi(left_points)
-            right_vd = self.build_voronoi(right_points)
+            left_vd = self.build_voronoi(left_points, record_steps, step_counter)
+            right_vd = self.build_voronoi(right_points, record_steps, step_counter)
             
             # Merge：合併左右子問題的結果
-            merged_vd = self.merge_voronoi(left_vd, right_vd)
+            merged_vd = self.merge_voronoi(left_vd, right_vd, record_steps, step_counter)
             return merged_vd
 
     #兩個點的處理
@@ -318,7 +368,10 @@ class VoronoiGUI:
     
 
     #合併左右子問題
-    def merge_voronoi(self, left_vd, right_vd):
+    def merge_voronoi(self, left_vd, right_vd, record_steps=False, step_counter=None):
+        if step_counter is None:
+            step_counter = [0]
+            
         merged_vd = VoronoiDiagram()
         
         # 合併點集
@@ -444,6 +497,9 @@ class VoronoiGUI:
         current_A = A
         current_B = B
         
+        # 保存所有產生的cross點，用於後續截斷邏輯
+        all_cross_points = []
+        
         # 獲取初始的midAB邊緣交點，按Y值排序
         midAB_start, midAB_end = VoronoiEdge.get_perpendicular_bisector_on_canvas(current_A, current_B)
         if midAB_start.y > midAB_end.y:
@@ -522,6 +578,9 @@ class VoronoiGUI:
                 
                 print(f"下一個碰撞點: ({new_cross.x:.2f}, {new_cross.y:.2f})")
                 
+                # 保存cross點
+                all_cross_points.append(new_cross)
+                
                 # 檢查碰撞點是否在正確方向（Y值應該大於等於起始點Y值）
                 if new_cross.y < current_midAB_start.y:
                     print(f"碰撞點Y值({new_cross.y:.2f}) < 起始點Y值({current_midAB_start.y:.2f})，碰撞點在反方向，不進行碰撞處理")
@@ -565,6 +624,7 @@ class VoronoiGUI:
                     print(f"B 移動到: ({current_B.x}, {current_B.y})")
                     updated = True
                 else:
+                    '''
                     # 兩點都不含AB的情況：根據左右半邊決定處理方式
                     print(f"被碰撞邊的兩點({site1.x}, {site1.y})和({site2.x}, {site2.y})都不含當前AB")
                     print(f"當前A: ({current_A.x}, {current_A.y}), B: ({current_B.x}, {current_B.y})")
@@ -599,7 +659,7 @@ class VoronoiGUI:
                             print(f"右半邊三點處理：添加了{len(three_point_vd.vertices)}個頂點")
                     else:
                         print("兩點跨越左右半邊或無法判斷，跳過三點處理")
-                
+                '''
                 if not updated:
                     print("A和B都不在被碰撞線段中，結束迭代")
                     break
@@ -692,8 +752,121 @@ class VoronoiGUI:
         self.debug_A = current_A
         self.debug_B = current_B
         
+        #執行截斷邏輯，確保左子圖點產生的中垂線不會越過分隔線 (右子圖同理)
         
-
+        # 計算左右分界線的X座標
+        left_max_x = max(p.x for p in left_vd.points)
+        right_min_x = min(p.x for p in right_vd.points)
+        separator_x = (left_max_x + right_min_x) / 2
+        
+        print(f"分隔線X座標: {separator_x:.2f}")
+        print(f"左半邊最大X: {left_max_x:.2f}, 右半邊最小X: {right_min_x:.2f}")
+        print(f"可用的cross點數量: {len(all_cross_points)}")
+        
+        # 輔助函數：找到與特定邊最相關的cross點
+        def find_best_cross_point_for_edge(cross_points, edge, separator_x, is_start_point=True):
+            if not cross_points:
+                return None
+                
+            best_point = None
+            min_distance = float('inf')
+            
+            # 獲取需要截斷的點
+            target_vertex = edge.start_vertex if is_start_point else edge.end_vertex
+            other_vertex = edge.end_vertex if is_start_point else edge.start_vertex
+            
+            for cross_point in cross_points:
+                # 檢查cross點是否在邊的合理範圍內
+                # 計算cross點到邊的距離
+                
+                # 使用點到線段的距離公式
+                # 先計算cross點到整條邊（延長線）的距離
+                edge_vec_x = other_vertex.x - target_vertex.x
+                edge_vec_y = other_vertex.y - target_vertex.y
+                
+                if edge_vec_x == 0 and edge_vec_y == 0:
+                    # 邊長度為0，直接使用歐氏距離
+                    distance = ((cross_point.x - target_vertex.x)**2 + (cross_point.y - target_vertex.y)**2)**0.5
+                else:
+                    # 計算cross點在邊方向上的投影
+                    t = ((cross_point.x - target_vertex.x) * edge_vec_x + 
+                         (cross_point.y - target_vertex.y) * edge_vec_y) / (edge_vec_x**2 + edge_vec_y**2)
+                    
+                    # 找到邊上最接近cross點的點
+                    proj_x = target_vertex.x + t * edge_vec_x
+                    proj_y = target_vertex.y + t * edge_vec_y
+                    
+                    # 計算cross點到邊的垂直距離
+                    distance = ((cross_point.x - proj_x)**2 + (cross_point.y - proj_y)**2)**0.5
+                    
+                    # 額外考慮：cross點的X座標是否接近分隔線
+                    x_distance_to_separator = abs(cross_point.x - separator_x)
+                    
+                    # 綜合考慮到邊的距離和到分隔線的距離
+                    combined_distance = distance + x_distance_to_separator * 0.5
+                    
+                    if combined_distance < min_distance:
+                        min_distance = combined_distance
+                        best_point = cross_point
+            
+            return best_point
+        
+        # 處理左子圖的邊，確保不越過分隔線
+        for edge in left_vd.edges[:]:  # 使用切片複製，避免修改時的迭代問題
+            if edge.start_vertex and edge.end_vertex:
+                truncated = False
+                
+                # 檢查起始點是否越過分隔線
+                if edge.start_vertex.x > separator_x:
+                    # 起始點越過分隔線，找到最適合的cross點作為截斷點
+                    best_cross = find_best_cross_point_for_edge(all_cross_points, edge, separator_x, is_start_point=True)
+                    if best_cross:
+                        edge.set_start_vertex(VoronoiVertex(best_cross.x, best_cross.y))
+                        truncated = True
+                        print(f"左邊邊截斷起始點到cross點: ({best_cross.x:.2f}, {best_cross.y:.2f})")
+                
+                # 檢查結束點是否越過分隔線
+                if edge.end_vertex.x > separator_x:
+                    # 結束點越過分隔線，找到最適合的cross點作為截斷點
+                    best_cross = find_best_cross_point_for_edge(all_cross_points, edge, separator_x, is_start_point=False)
+                    if best_cross:
+                        edge.set_end_vertex(VoronoiVertex(best_cross.x, best_cross.y))
+                        truncated = True
+                        print(f"左邊邊截斷結束點到cross點: ({best_cross.x:.2f}, {best_cross.y:.2f})")
+                
+                # 如果整條邊都在分隔線右側，移除該邊
+                if edge.start_vertex.x > separator_x and edge.end_vertex.x > separator_x:
+                    left_vd.edges.remove(edge)
+                    print(f"左邊邊完全越過分隔線，已移除")
+        
+        # 處理右子圖的邊，確保不越過分隔線
+        for edge in right_vd.edges[:]:  # 使用切片複製，避免修改時的迭代問題
+            if edge.start_vertex and edge.end_vertex:
+                truncated = False
+                
+                # 檢查起始點是否越過分隔線
+                if edge.start_vertex.x < separator_x:
+                    # 起始點越過分隔線，找到最適合的cross點作為截斷點
+                    best_cross = find_best_cross_point_for_edge(all_cross_points, edge, separator_x, is_start_point=True)
+                    if best_cross:
+                        edge.set_start_vertex(VoronoiVertex(best_cross.x, best_cross.y))
+                        truncated = True
+                        print(f"右邊邊截斷起始點到cross點: ({best_cross.x:.2f}, {best_cross.y:.2f})")
+                
+                # 檢查結束點是否越過分隔線
+                if edge.end_vertex.x < separator_x:
+                    # 結束點越過分隔線，找到最適合的cross點作為截斷點
+                    best_cross = find_best_cross_point_for_edge(all_cross_points, edge, separator_x, is_start_point=False)
+                    if best_cross:
+                        edge.set_end_vertex(VoronoiVertex(best_cross.x, best_cross.y))
+                        truncated = True
+                        print(f"右邊邊截斷結束點到cross點: ({best_cross.x:.2f}, {best_cross.y:.2f})")
+                
+                # 如果整條邊都在分隔線左側，移除該邊
+                if edge.start_vertex.x < separator_x and edge.end_vertex.x < separator_x:
+                    right_vd.edges.remove(edge)
+                    print(f"右邊邊完全越過分隔線，已移除")
+        
         # 合併結果
         merged_vd.edges.extend(left_vd.edges)
         merged_vd.edges.extend(right_vd.edges)
@@ -703,7 +876,71 @@ class VoronoiGUI:
         merged_vd.vertices.extend(right_vd.vertices)
         # midAB 的端點也已經在上面處理中加入
         
+        # 計算合併後的凸包
+        self.debug_merged_hull = self.compute_merged_convex_hull(left_hull, right_hull, A, B)
+        
+        # 記錄merge步驟（如果啟用記錄模式）
+        if record_steps:
+            step_counter[0] += 1
+            step_description = f"Merge step {step_counter[0]}: Merging {len(left_vd.points)} left points with {len(right_vd.points)} right points"
+            
+            # 收集hyperplane邊（midAB組成的線段）
+            hyperplane_edges = [edge for edge in merged_vd.edges if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane]
+            
+            merge_step = MergeStep(
+                step_number=step_counter[0],
+                description=step_description,
+                voronoi_diagram=merged_vd,
+                left_hull=left_hull,
+                right_hull=right_hull,
+                merged_hull=self.debug_merged_hull,
+                hyperplanes=hyperplane_edges,
+                debug_A=A,
+                debug_B=B
+            )
+            self.merge_steps.append(merge_step)
+        
         return merged_vd
+    
+    def compute_merged_convex_hull(self, left_hull, right_hull, A, B):
+        """計算左右凸包合併後的大凸包"""
+        # 合併所有點
+        all_points = left_hull + right_hull
+        
+        # 使用Graham scan算法計算合併後的凸包
+        if len(all_points) < 3:
+            return all_points
+        
+        # 尋找最下方的點（Y座標最小，相同時取X座標最小）
+        start_point = min(all_points, key=lambda p: (p.y, p.x))
+        
+        # 按極角排序其餘點
+        def polar_angle(point):
+            import math
+            dx = point.x - start_point.x
+            dy = point.y - start_point.y
+            return math.atan2(dy, dx)
+        
+        def cross_product(o, a, b):
+            return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+        
+        # 移除起始點並按極角排序
+        other_points = [p for p in all_points if p != start_point]
+        other_points.sort(key=polar_angle)
+        
+        # Graham scan 構建凸包
+        hull = [start_point]
+        for point in other_points:
+            # 移除不在凸包上的點
+            while len(hull) > 1 and cross_product(hull[-2], hull[-1], point) < 0:
+                hull.pop()
+            hull.append(point)
+        
+        print(f"合併後的大凸包:")
+        for i, p in enumerate(hull):
+            print(f"  M{i}: ({p.x}, {p.y})")
+        
+        return hull
     
     def get_convex_hull_ordered(self, points, counterclockwise=True, start_point=None):
         """獲取有序的凸包點，可指定起始點"""
@@ -856,7 +1093,7 @@ class VoronoiGUI:
             if point == A:
                 continue
                 
-            # 計算叉積：向量(A -> next_B) × 向量(A -> point)  
+            # 計算外積：向量(A -> next_B) × 向量(A -> point)  
             # 如果結果 > 0，表示point在A-next_B線段的下方（左側），這是我們要的
             # 如果結果 < 0，表示point在A-next_B線段的上方（右側），不符合上切線要求
             cross = self.cross_product(A, next_B, point)
@@ -1163,13 +1400,19 @@ class VoronoiGUI:
         self.canvas.delete("all")  # 清空畫布
         self.canvas.configure(bg="white")
         
+        # 如果處於step模式但current_step為-1，恢復正常標題
+        if self.is_step_mode and self.current_step == -1:
+            self.root.title("Voronoi Diagram - Final Complete Result")
+        elif not self.is_step_mode:
+            self.root.title("Voronoi Diagram")
+        
         # 繪製點
         for x, y in self.points:
             self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="black")
         
-        # 繪製頂點
-        for vertex in self.vd.vertices:
-            self.canvas.create_oval(vertex.x-3, vertex.y-3, vertex.x+3, vertex.y+3, fill="red")
+        # 繪製頂點 (circumcenters) - 隱藏以簡化視圖
+        # for vertex in self.vd.vertices:
+        #     self.canvas.create_oval(vertex.x-3, vertex.y-3, vertex.x+3, vertex.y+3, fill="red")
         
         # 繪製邊
         for edge in self.vd.edges:
@@ -1195,7 +1438,7 @@ class VoronoiGUI:
                                     fill=edge_color, width=line_width)
         
         # 繪製調試信息：左側凸包（順時針，紅色）
-        if self.debug_left_hull:
+        if self.show_convex_hull.get() and self.debug_left_hull:
             for i, point in enumerate(self.debug_left_hull):
                 # 繪製凸包點（紅色圓圈）
                 self.canvas.create_oval(point.x-5, point.y-5, point.x+5, point.y+5, 
@@ -1208,7 +1451,7 @@ class VoronoiGUI:
                                       fill="red", width=2, dash=(5, 5))
         
         # 繪製調試信息：右側凸包（逆時針，綠色）
-        if self.debug_right_hull:
+        if self.show_convex_hull.get() and self.debug_right_hull:
             for i, point in enumerate(self.debug_right_hull):
                 # 繪製凸包點（綠色圓圈）
                 self.canvas.create_oval(point.x-5, point.y-5, point.x+5, point.y+5, 
@@ -1220,25 +1463,178 @@ class VoronoiGUI:
                 self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
                                       fill="green", width=2, dash=(5, 5))
         
-        # 繪製A和B點（特別標記）
-        if self.debug_A:
-            self.canvas.create_oval(self.debug_A.x-8, self.debug_A.y-8, 
-                                  self.debug_A.x+8, self.debug_A.y+8, 
-                                  outline="purple", width=3, fill="yellow")
-            self.canvas.create_text(self.debug_A.x, self.debug_A.y-15, text="A", 
-                                  fill="purple", font=("Arial", 12, "bold"))
+        # 繪製A和B點（特別標記） - 已隱藏
+        # if self.debug_A:
+        #     self.canvas.create_oval(self.debug_A.x-8, self.debug_A.y-8, 
+        #                           self.debug_A.x+8, self.debug_A.y+8, 
+        #                           outline="purple", width=3, fill="yellow")
+        #     self.canvas.create_text(self.debug_A.x, self.debug_A.y-15, text="A", 
+        #                           fill="purple", font=("Arial", 12, "bold"))
         
-        if self.debug_B:
-            self.canvas.create_oval(self.debug_B.x-8, self.debug_B.y-8, 
-                                  self.debug_B.x+8, self.debug_B.y+8, 
-                                  outline="purple", width=3, fill="yellow")
-            self.canvas.create_text(self.debug_B.x, self.debug_B.y-15, text="B", 
-                                  fill="purple", font=("Arial", 12, "bold"))
+        # if self.debug_B:
+        #     self.canvas.create_oval(self.debug_B.x-8, self.debug_B.y-8, 
+        #                           self.debug_B.x+8, self.debug_B.y+8, 
+        #                           outline="purple", width=3, fill="yellow")
+        #     self.canvas.create_text(self.debug_B.x, self.debug_B.y-15, text="B", 
+        #                           fill="purple", font=("Arial", 12, "bold"))
+
+        # 繪製合併後的大凸包（紫色，較粗線條）
+        if self.show_merged_hull.get() and self.debug_merged_hull:
+            for i, point in enumerate(self.debug_merged_hull):
+                # 繪製合併凸包點（紫色圓圈）
+                self.canvas.create_oval(point.x-6, point.y-6, point.x+6, point.y+6, 
+                                      outline="purple", width=3, fill="")
+                # 標記順序號
+                self.canvas.create_text(point.x-15, point.y-15, text=f"M{i}", fill="purple", font=("Arial", 10, "bold"))
+                # 繪製合併凸包邊
+                next_point = self.debug_merged_hull[(i+1) % len(self.debug_merged_hull)]
+                self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
+                                      fill="purple", width=3, dash=(3, 3))
 
     #照步驟執行   
     def step_voronoi(self):
-        # 執行一步 merge，顯示左右子問題
-        pass
+        """Step by Step按鈕：第一次點擊執行算法並顯示第一步，後續點擊顯示下一步"""
+        if not self.points:
+            messagebox.showwarning("Warning", "No points to process")
+            return
+        
+        # 如果還沒初始化或者不在step模式，進行初始化
+        if not hasattr(self, 'is_step_mode') or not self.is_step_mode or not self.merge_steps:
+            # 清空之前的資料
+            self.vd.edges.clear()
+            self.vd.vertices.clear() 
+            self.vd.point_to_edges.clear()
+            self.merge_steps.clear()
+            self.current_step = -1
+            self.is_step_mode = True
+            
+            # 執行算法並記錄步驟
+            points = [Point(x, y) for x, y in self.points]
+            self.vd = self.build_voronoi(points, record_steps=True)
+            
+            # 如果有步驟記錄，顯示第一步
+            if self.merge_steps:
+                self.current_step = 0
+                self.show_step(0)
+            else:
+                # 沒有merge步驟（點數過少），直接顯示結果
+                self.is_step_mode = False
+                self.draw_voronoi()
+        else:
+            # 已經在step模式中，顯示下一步
+            if self.current_step < len(self.merge_steps) - 1:
+                self.current_step += 1
+                self.show_step(self.current_step)
+            else:
+                # 已經到最後一步，顯示完成圖案
+                self.current_step = -1
+                self.is_step_mode = False
+                self.draw_voronoi()
+                self.root.title("Voronoi Diagram - Complete")
+    
+    # 以下方法已不再使用，因為改用單一按鈕控制
+    # def next_step(self):
+    #     """顯示下一個步驟"""
+    #     if not self.is_step_mode or not self.merge_steps:
+    #         return
+    #     
+    #     if self.current_step < len(self.merge_steps) - 1:
+    #         self.current_step += 1
+    #         self.show_step(self.current_step)
+    # 
+    # def prev_step(self):
+    #     """顯示上一個步驟"""
+    #     if not self.is_step_mode or not self.merge_steps:
+    #         return
+    #     
+    #     if self.current_step > 0:
+    #         self.current_step -= 1
+    #         self.show_step(self.current_step)
+    # 
+    # def show_final(self):
+    #     """顯示最終完整結果"""
+    #     if not self.is_step_mode:
+    #         return
+    #     
+    #     self.current_step = -1
+    #     self.draw_voronoi()
+    
+    def show_step(self, step_index):
+        """顯示指定步驟的狀態"""
+        if step_index < 0 or step_index >= len(self.merge_steps):
+            return
+        
+        step = self.merge_steps[step_index]
+        
+        # 更新調試變量以顯示該步驟的狀態
+        self.debug_left_hull = step.left_hull
+        self.debug_right_hull = step.right_hull  
+        self.debug_merged_hull = step.merged_hull
+        self.debug_A = step.debug_A
+        self.debug_B = step.debug_B
+        
+        # 暫時替換voronoi diagram來顯示該步驟
+        self.current_step_vd = step.voronoi_diagram
+        
+        # 重新繪製
+        self.draw_step_voronoi(step)
+        
+        # 顯示步驟資訊
+        self.root.title(f"Voronoi Diagram - {step.description} ({step_index + 1}/{len(self.merge_steps)})")
+    
+    def draw_step_voronoi(self, step):
+        """繪製特定步驟的voronoi圖"""
+        self.canvas.delete("all")
+        
+        # 繪製輸入點
+        for x, y in self.points:
+            self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="black")
+        
+        # 繪製該步驟的voronoi邊
+        for edge in step.voronoi_diagram.edges:
+            if edge.start_vertex and edge.end_vertex:  # 確保邊有端點
+                if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane:
+                    # hyperplane用橙色
+                    self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
+                                          edge.end_vertex.x, edge.end_vertex.y, 
+                                          fill="orange", width=2)
+                else:
+                    # 一般voronoi邊用藍色
+                    self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
+                                          edge.end_vertex.x, edge.end_vertex.y, 
+                                          fill="blue", width=1)
+        
+        # 繪製左右凸包（如果啟用顯示）
+        if self.show_convex_hull.get():
+            # 繪製左凸包（紅色）
+            if step.left_hull:
+                for i, point in enumerate(step.left_hull):
+                    self.canvas.create_oval(point.x-4, point.y-4, point.x+4, point.y+4, 
+                                          outline="red", width=2, fill="")
+                    self.canvas.create_text(point.x-10, point.y-10, text=f"L{i}", fill="red", font=("Arial", 8))
+                    next_point = step.left_hull[(i+1) % len(step.left_hull)]
+                    self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
+                                          fill="red", width=2, dash=(5, 5))
+            
+            # 繪製右凸包（綠色）
+            if step.right_hull:
+                for i, point in enumerate(step.right_hull):
+                    self.canvas.create_oval(point.x-4, point.y-4, point.x+4, point.y+4, 
+                                          outline="green", width=2, fill="")
+                    self.canvas.create_text(point.x+10, point.y-10, text=f"R{i}", fill="green", font=("Arial", 8))
+                    next_point = step.right_hull[(i+1) % len(step.right_hull)]
+                    self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
+                                          fill="green", width=2, dash=(5, 5))
+        
+        # 繪製合併後的大凸包（如果啟用顯示）
+        if self.show_merged_hull.get() and step.merged_hull:
+            for i, point in enumerate(step.merged_hull):
+                self.canvas.create_oval(point.x-6, point.y-6, point.x+6, point.y+6, 
+                                      outline="purple", width=3, fill="")
+                self.canvas.create_text(point.x-15, point.y-15, text=f"M{i}", fill="purple", font=("Arial", 10, "bold"))
+                next_point = step.merged_hull[(i+1) % len(step.merged_hull)]
+                self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
+                                      fill="purple", width=3, dash=(3, 3))
     
 
     #讀檔
