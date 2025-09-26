@@ -412,7 +412,7 @@ class VoronoiGUI:
         print(f"midAB 碰到圖形邊緣: 起始點(Y={midAB_start.y:.2f}): ({midAB_start.x:.2f}, {midAB_start.y:.2f})")
         print(f"                    結束點(Y={midAB_end.y:.2f}): ({midAB_end.x:.2f}, {midAB_end.y:.2f})")
         
-        midAB = VoronoiEdge(A, B)
+        midAB = VoronoiEdge(A, B, is_hyperplane=True)
         midAB.set_start_vertex(midAB_start)
         midAB.set_end_vertex(midAB_end)
         
@@ -462,21 +462,36 @@ class VoronoiGUI:
                 current_midAB_start = midAB_start
                 current_midAB_end = midAB_end
             else:
-                # 從current_cross開始，使用上次計算的midAB_end方向
+                # 從current_cross開始，重新計算midAB的端點
                 current_midAB_start = current_cross
-                current_midAB_end = midAB_end  # 使用前面計算好的正確方向端點
+                
+                # 重新計算完整的midAB邊界交點
+                temp_start, temp_end = VoronoiEdge.get_perpendicular_bisector_on_canvas(current_A, current_B)
+                
+                # 計算從current_cross到兩個端點的Y方向距離
+                to_temp_start_y = temp_start.y - current_cross.y
+                to_temp_end_y = temp_end.y - current_cross.y
+                
+                # 選擇Y方向增量較大的端點作為結束點，確保往Y較大方向
+                if to_temp_end_y > to_temp_start_y:
+                    current_midAB_end = temp_end
+                    print(f"選擇temp_end作為結束點，Y方向增量: {to_temp_end_y:.2f}")
+                else:
+                    current_midAB_end = temp_start
+                    print(f"選擇temp_start作為結束點，Y方向增量: {to_temp_start_y:.2f}")
             
-            # 確保midAB段是往Y較大方向：結束點Y > 起始點Y
-            if current_midAB_end.y < current_midAB_start.y:
-                print(f"midAB方向錯誤，需要反向：起始點Y({current_midAB_start.y:.2f}) > 結束點Y({current_midAB_end.y:.2f})")
-                current_midAB_start, current_midAB_end = current_midAB_end, current_midAB_start
-                print(f"已反向：起始點Y({current_midAB_start.y:.2f}) -> 結束點Y({current_midAB_end.y:.2f})")
+            # 最終檢查：確保midAB段是往Y較大方向：結束點Y > 起始點Y
+            if current_midAB_end.y <= current_midAB_start.y:
+                print(f"midAB方向仍然錯誤：起始點Y({current_midAB_start.y:.2f}) >= 結束點Y({current_midAB_end.y:.2f})")
+                # 如果還是不對，強制創建一個往Y較大方向的端點
+                current_midAB_end = VoronoiVertex(current_midAB_start.x, current_midAB_start.y + 100)
+                print(f"強制修正：結束點設為 ({current_midAB_end.x:.2f}, {current_midAB_end.y:.2f})")
             
             print(f"midAB 線段: 從 ({current_midAB_start.x:.2f}, {current_midAB_start.y:.2f}) 到 ({current_midAB_end.x:.2f}, {current_midAB_end.y:.2f})")
             print(f"  起始點Y: {current_midAB_start.y:.2f}, 結束點Y: {current_midAB_end.y:.2f} (結束點Y較大: {current_midAB_end.y > current_midAB_start.y})")
             
-            # 創建當前的midAB線段
-            current_midAB = VoronoiEdge(current_A, current_B)
+            # 創建當前的midAB線段（標記為hyperplane）
+            current_midAB = VoronoiEdge(current_A, current_B, is_hyperplane=True)
             current_midAB.set_start_vertex(current_midAB_start)
             current_midAB.set_end_vertex(current_midAB_end)
             
@@ -505,21 +520,34 @@ class VoronoiGUI:
                 intersected_edge = collision['intersected_edge']
                 site1, site2 = collision['bisected_points']
                 
-                print(f"碰撞點: ({new_cross.x:.2f}, {new_cross.y:.2f})")
+                print(f"下一個碰撞點: ({new_cross.x:.2f}, {new_cross.y:.2f})")
+                
+                # 檢查碰撞點是否在正確方向（Y值應該大於等於起始點Y值）
+                if new_cross.y < current_midAB_start.y:
+                    print(f"碰撞點Y值({new_cross.y:.2f}) < 起始點Y值({current_midAB_start.y:.2f})，碰撞點在反方向，不進行碰撞處理")
+                    print(f"直接繪製完整midAB：從起始點 ({current_midAB_start.x:.2f}, {current_midAB_start.y:.2f}) 到結束點 ({current_midAB_end.x:.2f}, {current_midAB_end.y:.2f})")
+                    
+                    # 直接加入完整的midAB線段並結束迭代
+                    merged_vd.edges.append(current_midAB)
+                    break
+                
                 print(f"被碰撞線段由點 ({site1.x}, {site1.y}) 和 ({site2.x}, {site2.y}) 產生")
                 
-                # 確保當前midAB段是往Y較大方向：從起始點到碰撞點
-                # 檢查方向是否正確
-                if current_midAB.start_vertex.y <= new_cross.y:
-                    # 方向正確：起始點Y <= 碰撞點Y，保留起始點到碰撞點的部分
-                    current_midAB.set_end_vertex(VoronoiVertex(new_cross.x, new_cross.y))
-                    print(f"midAB段方向正確：從 ({current_midAB.start_vertex.x:.2f}, {current_midAB.start_vertex.y:.2f}) 到碰撞點 ({new_cross.x:.2f}, {new_cross.y:.2f})")
+                # 確保當前midAB段是往Y較大方向：從上一個碰撞點到下一個碰撞點
+                previous_point = current_midAB.start_vertex  # 上一個碰撞點（或初始起始點）
+                next_collision_point = new_cross             # 下一個碰撞點
+                
+                # 檢查方向是否正確：上一個點的Y <= 下一個碰撞點的Y
+                if previous_point.y <= next_collision_point.y:
+                    # 方向正確：從上一個碰撞點到下一個碰撞點是往Y較大方向
+                    current_midAB.set_end_vertex(VoronoiVertex(next_collision_point.x, next_collision_point.y))
+                    print(f"midAB段方向正確：從上一個點 ({previous_point.x:.2f}, {previous_point.y:.2f}) 到下一個碰撞點 ({next_collision_point.x:.2f}, {next_collision_point.y:.2f})")
                 else:
-                    # 方向錯誤：起始點Y > 碰撞點Y，需要反向，從碰撞點到起始點
-                    original_start = current_midAB.start_vertex
-                    current_midAB.set_start_vertex(VoronoiVertex(new_cross.x, new_cross.y))
-                    current_midAB.set_end_vertex(original_start)
-                    print(f"midAB段方向修正：從碰撞點 ({new_cross.x:.2f}, {new_cross.y:.2f}) 到 ({original_start.x:.2f}, {original_start.y:.2f})")
+                    # 方向錯誤：上一個點的Y > 下一個碰撞點的Y，需要反向
+                    # 從下一個碰撞點到上一個點（使線段往Y較大方向）
+                    current_midAB.set_start_vertex(VoronoiVertex(next_collision_point.x, next_collision_point.y))
+                    current_midAB.set_end_vertex(previous_point)
+                    print(f"midAB段方向修正：從下一個碰撞點 ({next_collision_point.x:.2f}, {next_collision_point.y:.2f}) 到上一個點 ({previous_point.x:.2f}, {previous_point.y:.2f})")
                 
                 merged_vd.edges.append(current_midAB)
                 
@@ -536,6 +564,41 @@ class VoronoiGUI:
                     current_B = site2 if current_B == site1 else site1
                     print(f"B 移動到: ({current_B.x}, {current_B.y})")
                     updated = True
+                else:
+                    # 兩點都不含AB的情況：根據左右半邊決定處理方式
+                    print(f"被碰撞邊的兩點({site1.x}, {site1.y})和({site2.x}, {site2.y})都不含當前AB")
+                    print(f"當前A: ({current_A.x}, {current_A.y}), B: ({current_B.x}, {current_B.y})")
+                    
+                    # 判斷這兩點屬於左半邊還是右半邊
+                    if site1 in left_vd.points and site2 in left_vd.points:
+                        print("兩點屬於左半邊，與B做三點繪製")
+                        # 左半邊：用這兩點與B做三點處理
+                        three_points = [site1, site2, current_B]
+                        three_point_vd = self.build_voronoi_three_points(three_points)
+                        
+                        # 將三點Voronoi的結果合併到當前結果中
+                        if three_point_vd.edges:
+                            merged_vd.edges.extend(three_point_vd.edges)
+                            print(f"左半邊三點處理：添加了{len(three_point_vd.edges)}條邊")
+                        if three_point_vd.vertices:
+                            merged_vd.vertices.extend(three_point_vd.vertices)
+                            print(f"左半邊三點處理：添加了{len(three_point_vd.vertices)}個頂點")
+                            
+                    elif site1 in right_vd.points and site2 in right_vd.points:
+                        print("兩點屬於右半邊，與A做三點繪製")
+                        # 右半邊：用這兩點與A做三點處理
+                        three_points = [site1, site2, current_A]
+                        three_point_vd = self.build_voronoi_three_points(three_points)
+                        
+                        # 將三點Voronoi的結果合併到當前結果中
+                        if three_point_vd.edges:
+                            merged_vd.edges.extend(three_point_vd.edges)
+                            print(f"右半邊三點處理：添加了{len(three_point_vd.edges)}條邊")
+                        if three_point_vd.vertices:
+                            merged_vd.vertices.extend(three_point_vd.vertices)
+                            print(f"右半邊三點處理：添加了{len(three_point_vd.vertices)}個頂點")
+                    else:
+                        print("兩點跨越左右半邊或無法判斷，跳過三點處理")
                 
                 if not updated:
                     print("A和B都不在被碰撞線段中，結束迭代")
@@ -613,7 +676,7 @@ class VoronoiGUI:
                     extended_end_y = current_cross.y + 50  # 至少增加50像素
                 
                 # 創建最終的midAB線段：保留cross往Y較大的部分，截掉往Y較小的部分
-                final_midAB = VoronoiEdge(current_A, current_B)
+                final_midAB = VoronoiEdge(current_A, current_B, is_hyperplane=True)
                 # cross作為起始點，延伸到Y較大的端點
                 final_midAB.set_start_vertex(current_cross)
                 final_midAB.set_end_vertex(VoronoiVertex(extended_end_x, extended_end_y))
@@ -991,11 +1054,22 @@ class VoronoiGUI:
                 # 對於無限邊，計算與畫布邊界的交點（簡化處理）
                 if edge.start_vertex:
                     x1, y1 = edge.start_vertex.x, edge.start_vertex.y
+                    # 根據是否為hyperplane選擇顏色
+                    edge_color = "orange" if edge.is_hyperplane else "blue"
                     # 假設沿著中垂線方向延伸到邊界，這裡需要根據 site1 和 site2 計算方向
-                    self.canvas.create_line(x1, y1, x1, 0, fill="blue")  # 示例，實際需計算
+                    self.canvas.create_line(x1, y1, x1, 0, fill=edge_color)  # 示例，實際需計算
             elif edge.start_vertex and edge.end_vertex:
+                # 根據是否為hyperplane選擇顏色和線寬
+                if edge.is_hyperplane:
+                    edge_color = "orange"
+                    line_width = 3
+                else:
+                    edge_color = "blue"
+                    line_width = 1
+                    
                 self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y,
-                                    edge.end_vertex.x, edge.end_vertex.y, fill="blue")
+                                    edge.end_vertex.x, edge.end_vertex.y, 
+                                    fill=edge_color, width=line_width)
         
         # 繪製調試信息：左側凸包（順時針，紅色）
         if self.debug_left_hull:
@@ -1037,12 +1111,6 @@ class VoronoiGUI:
                                   outline="purple", width=3, fill="yellow")
             self.canvas.create_text(self.debug_B.x, self.debug_B.y-15, text="B", 
                                   fill="purple", font=("Arial", 12, "bold"))
-        
-        # 繪製AB連線（上切線）
-        if self.debug_A and self.debug_B:
-            self.canvas.create_line(self.debug_A.x, self.debug_A.y, 
-                                  self.debug_B.x, self.debug_B.y, 
-                                  fill="purple", width=3)
 
     #照步驟執行   
     def step_voronoi(self):

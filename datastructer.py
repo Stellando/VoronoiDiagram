@@ -15,12 +15,13 @@ class VoronoiVertex:
         self.edges.append(edge)
 
 class VoronoiEdge:
-    def __init__(self, site1, site2):
+    def __init__(self, site1, site2, is_hyperplane=False):
         self.site1 = site1  # 平分的第一個點
         self.site2 = site2  # 平分的第二個點
         self.start_vertex = None
         self.end_vertex = None
         self.is_infinite = False
+        self.is_hyperplane = is_hyperplane  # 標記是否為hyperplane（midAB線段）
         self.slope = self._calculate_slope()  # 中垂線的斜率
         self.midpoint = self._calculate_midpoint()  # 中垂線經過的中點
     
