@@ -558,17 +558,26 @@ class VoronoiGUI:
             for existing_edge in all_existing_edges:
                 intersection_point = current_midAB.find_intersection(existing_edge)
                 if intersection_point:
+                    # 檢查交點是否在existing_edge的線段範圍內
                     if existing_edge.is_point_between_vertices(intersection_point):
-                        distance = ((intersection_point.x - current_midAB_start.x)**2 + 
-                                  (intersection_point.y - current_midAB_start.y)**2) ** 0.5
-                        
-                        if distance < closest_distance and distance > 1e-6:
-                            closest_distance = distance
-                            collision = {
-                                'point': intersection_point,
-                                'intersected_edge': existing_edge,
-                                'bisected_points': existing_edge.get_bisected_points()
-                            }
+                        # 檢查交點是否在midAB線段的範圍內
+                        if current_midAB.is_point_between_vertices(intersection_point):
+                            distance = ((intersection_point.x - current_midAB_start.x)**2 + 
+                                      (intersection_point.y - current_midAB_start.y)**2) ** 0.5
+                            
+                            print(f"找到有效交點: ({intersection_point.x:.2f}, {intersection_point.y:.2f}), 距離: {distance:.2f}")
+                            
+                            if distance < closest_distance and distance > 1e-6:
+                                closest_distance = distance
+                                collision = {
+                                    'point': intersection_point,
+                                    'intersected_edge': existing_edge,
+                                    'bisected_points': existing_edge.get_bisected_points()
+                                }
+                        else:
+                            print(f"交點({intersection_point.x:.2f}, {intersection_point.y:.2f})不在midAB線段範圍內，跳過")
+                    else:
+                        print(f"交點({intersection_point.x:.2f}, {intersection_point.y:.2f})不在existing_edge線段範圍內，跳過")
             
             # 處理碰撞
             if collision:
@@ -581,9 +590,24 @@ class VoronoiGUI:
                 # 保存cross點
                 all_cross_points.append(new_cross)
                 
-                # 檢查碰撞點是否在正確方向（Y值應該大於等於起始點Y值）
-                if new_cross.y < current_midAB_start.y:
-                    print(f"碰撞點Y值({new_cross.y:.2f}) < 起始點Y值({current_midAB_start.y:.2f})，碰撞點在反方向，不進行碰撞處理")
+                # 為被碰撞的邊設置碰撞信息
+                intersected_edge.set_cross_info(new_cross, current_midAB)
+                print(f"為邊設置碰撞信息: is_cross=True, cross_point=({new_cross.x:.2f}, {new_cross.y:.2f})")
+                
+                # 檢查碰撞點是否在合理的範圍內
+                # 計算碰撞點到midAB線段的距離，確保它在線段上或附近
+                distance_to_start = ((new_cross.x - current_midAB_start.x)**2 + 
+                                   (new_cross.y - current_midAB_start.y)**2) ** 0.5
+                distance_to_end = ((new_cross.x - current_midAB_end.x)**2 + 
+                                 (new_cross.y - current_midAB_end.y)**2) ** 0.5
+                total_length = ((current_midAB_end.x - current_midAB_start.x)**2 + 
+                               (current_midAB_end.y - current_midAB_start.y)**2) ** 0.5
+                
+                print(f"碰撞點距離檢查: 到起始點={distance_to_start:.2f}, 到結束點={distance_to_end:.2f}, 線段總長={total_length:.2f}")
+                
+                # 如果碰撞點距離起始點很近（小於5像素），可能是重複碰撞，跳過
+                if distance_to_start < 5:
+                    print(f"碰撞點距離起始點太近({distance_to_start:.2f} < 5)，可能是重複碰撞，跳過")
                     print(f"直接繪製完整midAB：從起始點 ({current_midAB_start.x:.2f}, {current_midAB_start.y:.2f}) 到結束點 ({current_midAB_end.x:.2f}, {current_midAB_end.y:.2f})")
                     
                     # 直接加入完整的midAB線段並結束迭代
@@ -624,8 +648,9 @@ class VoronoiGUI:
                     print(f"B 移動到: ({current_B.x}, {current_B.y})")
                     updated = True
                 else:
-                    '''
+                    
                     # 兩點都不含AB的情況：根據左右半邊決定處理方式
+                    '''
                     print(f"被碰撞邊的兩點({site1.x}, {site1.y})和({site2.x}, {site2.y})都不含當前AB")
                     print(f"當前A: ({current_A.x}, {current_A.y}), B: ({current_B.x}, {current_B.y})")
                     
@@ -751,121 +776,6 @@ class VoronoiGUI:
         # 更新調試顯示的A和B
         self.debug_A = current_A
         self.debug_B = current_B
-        
-        #執行截斷邏輯，確保左子圖點產生的中垂線不會越過分隔線 (右子圖同理)
-        
-        # 計算左右分界線的X座標
-        left_max_x = max(p.x for p in left_vd.points)
-        right_min_x = min(p.x for p in right_vd.points)
-        separator_x = (left_max_x + right_min_x) / 2
-        
-        print(f"分隔線X座標: {separator_x:.2f}")
-        print(f"左半邊最大X: {left_max_x:.2f}, 右半邊最小X: {right_min_x:.2f}")
-        print(f"可用的cross點數量: {len(all_cross_points)}")
-        
-        # 輔助函數：找到與特定邊最相關的cross點
-        def find_best_cross_point_for_edge(cross_points, edge, separator_x, is_start_point=True):
-            if not cross_points:
-                return None
-                
-            best_point = None
-            min_distance = float('inf')
-            
-            # 獲取需要截斷的點
-            target_vertex = edge.start_vertex if is_start_point else edge.end_vertex
-            other_vertex = edge.end_vertex if is_start_point else edge.start_vertex
-            
-            for cross_point in cross_points:
-                # 檢查cross點是否在邊的合理範圍內
-                # 計算cross點到邊的距離
-                
-                # 使用點到線段的距離公式
-                # 先計算cross點到整條邊（延長線）的距離
-                edge_vec_x = other_vertex.x - target_vertex.x
-                edge_vec_y = other_vertex.y - target_vertex.y
-                
-                if edge_vec_x == 0 and edge_vec_y == 0:
-                    # 邊長度為0，直接使用歐氏距離
-                    distance = ((cross_point.x - target_vertex.x)**2 + (cross_point.y - target_vertex.y)**2)**0.5
-                else:
-                    # 計算cross點在邊方向上的投影
-                    t = ((cross_point.x - target_vertex.x) * edge_vec_x + 
-                         (cross_point.y - target_vertex.y) * edge_vec_y) / (edge_vec_x**2 + edge_vec_y**2)
-                    
-                    # 找到邊上最接近cross點的點
-                    proj_x = target_vertex.x + t * edge_vec_x
-                    proj_y = target_vertex.y + t * edge_vec_y
-                    
-                    # 計算cross點到邊的垂直距離
-                    distance = ((cross_point.x - proj_x)**2 + (cross_point.y - proj_y)**2)**0.5
-                    
-                    # 額外考慮：cross點的X座標是否接近分隔線
-                    x_distance_to_separator = abs(cross_point.x - separator_x)
-                    
-                    # 綜合考慮到邊的距離和到分隔線的距離
-                    combined_distance = distance + x_distance_to_separator * 0.5
-                    
-                    if combined_distance < min_distance:
-                        min_distance = combined_distance
-                        best_point = cross_point
-            
-            return best_point
-        
-        # 處理左子圖的邊，確保不越過分隔線
-        for edge in left_vd.edges[:]:  # 使用切片複製，避免修改時的迭代問題
-            if edge.start_vertex and edge.end_vertex:
-                truncated = False
-                
-                # 檢查起始點是否越過分隔線
-                if edge.start_vertex.x > separator_x:
-                    # 起始點越過分隔線，找到最適合的cross點作為截斷點
-                    best_cross = find_best_cross_point_for_edge(all_cross_points, edge, separator_x, is_start_point=True)
-                    if best_cross:
-                        edge.set_start_vertex(VoronoiVertex(best_cross.x, best_cross.y))
-                        truncated = True
-                        print(f"左邊邊截斷起始點到cross點: ({best_cross.x:.2f}, {best_cross.y:.2f})")
-                
-                # 檢查結束點是否越過分隔線
-                if edge.end_vertex.x > separator_x:
-                    # 結束點越過分隔線，找到最適合的cross點作為截斷點
-                    best_cross = find_best_cross_point_for_edge(all_cross_points, edge, separator_x, is_start_point=False)
-                    if best_cross:
-                        edge.set_end_vertex(VoronoiVertex(best_cross.x, best_cross.y))
-                        truncated = True
-                        print(f"左邊邊截斷結束點到cross點: ({best_cross.x:.2f}, {best_cross.y:.2f})")
-                
-                # 如果整條邊都在分隔線右側，移除該邊
-                if edge.start_vertex.x > separator_x and edge.end_vertex.x > separator_x:
-                    left_vd.edges.remove(edge)
-                    print(f"左邊邊完全越過分隔線，已移除")
-        
-        # 處理右子圖的邊，確保不越過分隔線
-        for edge in right_vd.edges[:]:  # 使用切片複製，避免修改時的迭代問題
-            if edge.start_vertex and edge.end_vertex:
-                truncated = False
-                
-                # 檢查起始點是否越過分隔線
-                if edge.start_vertex.x < separator_x:
-                    # 起始點越過分隔線，找到最適合的cross點作為截斷點
-                    best_cross = find_best_cross_point_for_edge(all_cross_points, edge, separator_x, is_start_point=True)
-                    if best_cross:
-                        edge.set_start_vertex(VoronoiVertex(best_cross.x, best_cross.y))
-                        truncated = True
-                        print(f"右邊邊截斷起始點到cross點: ({best_cross.x:.2f}, {best_cross.y:.2f})")
-                
-                # 檢查結束點是否越過分隔線
-                if edge.end_vertex.x < separator_x:
-                    # 結束點越過分隔線，找到最適合的cross點作為截斷點
-                    best_cross = find_best_cross_point_for_edge(all_cross_points, edge, separator_x, is_start_point=False)
-                    if best_cross:
-                        edge.set_end_vertex(VoronoiVertex(best_cross.x, best_cross.y))
-                        truncated = True
-                        print(f"右邊邊截斷結束點到cross點: ({best_cross.x:.2f}, {best_cross.y:.2f})")
-                
-                # 如果整條邊都在分隔線左側，移除該邊
-                if edge.start_vertex.x < separator_x and edge.end_vertex.x < separator_x:
-                    right_vd.edges.remove(edge)
-                    print(f"右邊邊完全越過分隔線，已移除")
         
         # 合併結果
         merged_vd.edges.extend(left_vd.edges)
@@ -1129,7 +1039,7 @@ class VoronoiGUI:
                               (potential_circumcenter.y - intersected_edge.end_vertex.y)**2) ** 0.5
                     
                     # 如果外心接近其中一個端點（容差5像素），則找到正確的外心
-                    if start_dist < 5 or end_dist < 5:
+                    if start_dist < 3 or end_dist < 3:
                         circumcenter = potential_circumcenter
                         third_point = point
                         break
@@ -1137,7 +1047,95 @@ class VoronoiGUI:
         if circumcenter and third_point:
             print(f"找到外心: ({circumcenter.x:.2f}, {circumcenter.y:.2f})，第三點: ({third_point.x}, {third_point.y})")
             
-            # 判斷是否為鈍角三角形
+            # 檢查凸包大小，若凸包數量>3則不須判斷是否鈍角
+            left_hull_size = len(left_hull) if left_hull else 0
+            right_hull_size = len(right_hull) if right_hull else 0
+            
+            print(f"左凸包大小: {left_hull_size}, 右凸包大小: {right_hull_size}")
+            
+            # 如果任一凸包大小>3，跳過鈍角三角形的判斷和消邊邏輯
+            if left_hull_size > 3 or right_hull_size > 3:
+                print("凸包大小>3，跳過鈍角三角形判斷，使用A_POINT邏輯")
+                
+                # 使用A_POINT邏輯進行截斷
+                if hasattr(intersected_edge, 'is_cross') and intersected_edge.is_cross:
+                    hyperplane_N = intersected_edge.intersected_by_hyperplane
+                    
+                    # 檢查被碰撞邊的生成點與hyperplane生成點的匹配關係
+                    hyperplane_site1 = hyperplane_N.site1
+                    hyperplane_site2 = hyperplane_N.site2
+                    
+                    A_point = None
+                    
+                    # 檢查edge_site1是否與hyperplane的任一生成點相同
+                    if (edge_site1.x == hyperplane_site1.x and edge_site1.y == hyperplane_site1.y) or \
+                       (edge_site1.x == hyperplane_site2.x and edge_site1.y == hyperplane_site2.y):
+                        A_point = edge_site1
+                        print(f"edge_site1與hyperplane生成點匹配，使用作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
+                    # 檢查edge_site2是否與hyperplane的任一生成點相同
+                    elif (edge_site2.x == hyperplane_site1.x and edge_site2.y == hyperplane_site1.y) or \
+                         (edge_site2.x == hyperplane_site2.x and edge_site2.y == hyperplane_site2.y):
+                        A_point = edge_site2
+                        print(f"edge_site2與hyperplane生成點匹配，使用作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
+                    else:
+                        # 如果都不匹配，使用預設的edge_site1
+                        A_point = edge_site1
+                        print(f"無匹配點，預設使用edge_site1作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
+                    
+                    print(f"hyperplane生成點: site1({hyperplane_site1.x:.2f}, {hyperplane_site1.y:.2f}), site2({hyperplane_site2.x:.2f}, {hyperplane_site2.y:.2f})")
+                    print(f"被碰撞邊生成點: site1({edge_site1.x:.2f}, {edge_site1.y:.2f}), site2({edge_site2.x:.2f}, {edge_site2.y:.2f})")
+                    
+                    # 檢查A點、start_vertex、end_vertex在hyperplane方程式中的值
+                    A_value = intersected_edge.get_point_value_in_hyperplane_equation(A_point, hyperplane_N)
+                    
+                    start_vertex_value = None
+                    end_vertex_value = None
+                    
+                    if intersected_edge.start_vertex:
+                        start_vertex_value = intersected_edge.get_point_value_in_hyperplane_equation(
+                            Point(intersected_edge.start_vertex.x, intersected_edge.start_vertex.y), hyperplane_N)
+                    
+                    if intersected_edge.end_vertex:
+                        end_vertex_value = intersected_edge.get_point_value_in_hyperplane_equation(
+                            Point(intersected_edge.end_vertex.x, intersected_edge.end_vertex.y), hyperplane_N)
+                    
+                    print(f"  A點在hyperplane方程式中的值: {A_value:.6f}")
+                    if start_vertex_value is not None:
+                        print(f"  start_vertex在hyperplane方程式中的值: {start_vertex_value:.6f}")
+                    else:
+                        print("  start_vertex在hyperplane方程式中的值: None")
+                    
+                    if end_vertex_value is not None:
+                        print(f"  end_vertex在hyperplane方程式中的值: {end_vertex_value:.6f}")
+                    else:
+                        print("  end_vertex在hyperplane方程式中的值: None")
+                    
+                    # 檢查start_vertex和A點是否同號
+                    if start_vertex_value is not None:
+                        start_A_same_sign = (start_vertex_value * A_value >= 0)
+                        print(f"  start_vertex與A點同號: {start_A_same_sign}")
+                        
+                        if not start_A_same_sign:
+                            # 不同號，將start_vertex改設為cross點
+                            intersected_edge.start_vertex = VoronoiVertex(cross_point.x, cross_point.y)
+                            print(f"  -> start_vertex改設為cross點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
+                    
+                    # 檢查end_vertex和A點是否同號
+                    if end_vertex_value is not None:
+                        end_A_same_sign = (end_vertex_value * A_value >= 0)
+                        print(f"  end_vertex與A點同號: {end_A_same_sign}")
+                        
+                        if not end_A_same_sign:
+                            # 不同號，將end_vertex改設為cross點
+                            intersected_edge.end_vertex = VoronoiVertex(cross_point.x, cross_point.y)
+                            print(f"  -> end_vertex改設為cross點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
+                else:
+                    print("邊沒有碰撞信息，跳過A點基準截斷")
+                
+                return
+            
+            # 凸包大小<=3時，繼續進行鈍角三角形判斷
+            print("凸包大小<=3，繼續進行鈍角三角形判斷")
             is_obtuse = self.is_obtuse_triangle(edge_site1, edge_site2, third_point)
             obtuse_vertex = None
             
@@ -1333,7 +1331,90 @@ class VoronoiGUI:
                 intersected_edge.set_start_vertex(VoronoiVertex(cross_point.x, cross_point.y))
                 print(f"被碰撞邊截斷：保留從外心到 cross ({cross_point.x:.2f}, {cross_point.y:.2f})")
         else:
-            print("警告：找不到外心，跳過被碰撞邊的截斷")
+            print("警告：找不到外心，使用A點作為基準進行截斷")
+            
+            # 使用A點作為基準的截斷邏輯
+            # 需要從merge_voronoi函數中獲取當前的A點和hyperplane
+            if hasattr(intersected_edge, 'is_cross') and intersected_edge.is_cross:
+                hyperplane_N = intersected_edge.intersected_by_hyperplane
+                cross_point = intersected_edge.cross_point
+                
+                print(f"使用A點基準處理被碰撞的邊: 平分點({edge_site1.x:.2f}, {edge_site1.y:.2f})和({edge_site2.x:.2f}, {edge_site2.y:.2f})")
+                print(f"碰撞點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
+                
+                # 檢查被碰撞邊的生成點與hyperplane生成點的匹配關係
+                # 找出被碰撞邊中與hyperplane相關的點作為A點基準
+                hyperplane_site1 = hyperplane_N.site1
+                hyperplane_site2 = hyperplane_N.site2
+                
+                A_point = None
+                
+                # 檢查edge_site1是否與hyperplane的任一生成點相同
+                if (edge_site1.x == hyperplane_site1.x and edge_site1.y == hyperplane_site1.y) or \
+                   (edge_site1.x == hyperplane_site2.x and edge_site1.y == hyperplane_site2.y):
+                    A_point = edge_site1
+                    print(f"edge_site1與hyperplane生成點匹配，使用作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
+                # 檢查edge_site2是否與hyperplane的任一生成點相同
+                elif (edge_site2.x == hyperplane_site1.x and edge_site2.y == hyperplane_site1.y) or \
+                     (edge_site2.x == hyperplane_site2.x and edge_site2.y == hyperplane_site2.y):
+                    A_point = edge_site2
+                    print(f"edge_site2與hyperplane生成點匹配，使用作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
+                else:
+                    # 如果都不匹配，使用默認的edge_site1
+                    A_point = edge_site1
+                    print(f"無匹配點，默認使用edge_site1作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
+                
+                print(f"hyperplane生成點: site1({hyperplane_site1.x:.2f}, {hyperplane_site1.y:.2f}), site2({hyperplane_site2.x:.2f}, {hyperplane_site2.y:.2f})")
+                print(f"被碰撞邊生成點: site1({edge_site1.x:.2f}, {edge_site1.y:.2f}), site2({edge_site2.x:.2f}, {edge_site2.y:.2f})")
+                
+                # 檢查A點、start_vertex、end_vertex在hyperplane方程式中的值
+                A_value = intersected_edge.get_point_value_in_hyperplane_equation(A_point, hyperplane_N)
+                
+                start_vertex_value = None
+                end_vertex_value = None
+                
+                if intersected_edge.start_vertex:
+                    start_vertex_value = intersected_edge.get_point_value_in_hyperplane_equation(
+                        Point(intersected_edge.start_vertex.x, intersected_edge.start_vertex.y), hyperplane_N)
+                
+                if intersected_edge.end_vertex:
+                    end_vertex_value = intersected_edge.get_point_value_in_hyperplane_equation(
+                        Point(intersected_edge.end_vertex.x, intersected_edge.end_vertex.y), hyperplane_N)
+                
+                print(f"  A點在hyperplane方程式中的值: {A_value:.6f}")
+                if start_vertex_value is not None:
+                    print(f"  start_vertex: ({intersected_edge.start_vertex.x:.2f}, {intersected_edge.start_vertex.y:.2f})")
+                    print(f"  start_vertex在hyperplane方程式中的值: {start_vertex_value:.6f}")
+                else:
+                    print("  start_vertex在hyperplane方程式中的值: None")
+                
+                if end_vertex_value is not None:
+                    print(f"  end_vertex: ({intersected_edge.end_vertex.x:.2f}, {intersected_edge.end_vertex.y:.2f})")
+                    print(f"  end_vertex在hyperplane方程式中的值: {end_vertex_value:.6f}")
+                else:
+                    print("  end_vertex在hyperplane方程式中的值: None")
+                
+                # 檢查start_vertex和A點是否同號
+                if start_vertex_value is not None:
+                    start_A_same_sign = (start_vertex_value * A_value >= 0)
+                    print(f"  start_vertex與A點同號: {start_A_same_sign}")
+                    
+                    if not start_A_same_sign:
+                        # 不同號，將start_vertex改設為cross點
+                        intersected_edge.start_vertex = VoronoiVertex(cross_point.x, cross_point.y)
+                        print(f"  -> start_vertex改設為cross點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
+                
+                # 檢查end_vertex和A點是否同號
+                if end_vertex_value is not None:
+                    end_A_same_sign = (end_vertex_value * A_value >= 0)
+                    print(f"  end_vertex與A點同號: {end_A_same_sign}")
+                    
+                    if not end_A_same_sign:
+                        # 不同號，將end_vertex改設為cross點
+                        intersected_edge.end_vertex = VoronoiVertex(cross_point.x, cross_point.y)
+                        print(f"  -> end_vertex改設為cross點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
+            else:
+                print("邊沒有碰撞信息，跳過A點基準截斷")
     
     def is_obtuse_triangle(self, p1, p2, p3):
         """判斷三角形是否為鈍角三角形"""
