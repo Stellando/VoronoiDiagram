@@ -24,6 +24,32 @@ class VoronoiEdge:
         self.is_hyperplane = is_hyperplane  # 標記是否為hyperplane（midAB線段）
         self.slope = self._calculate_slope()  # 中垂線的斜率
         self.midpoint = self._calculate_midpoint()  # 中垂線經過的中點
+        
+        # 新增：碰撞相關屬性
+        self.is_cross = False  # 標記是否被hyperplane碰撞
+        self.cross_point = None  # 記錄碰撞點
+        self.intersected_by_hyperplane = None  # 記錄被哪條hyperplane碰撞
+    
+    # ...existing code...
+    
+    def set_cross_info(self, cross_point, hyperplane):
+        """設置碰撞信息"""
+        self.is_cross = True
+        self.cross_point = cross_point
+        self.intersected_by_hyperplane = hyperplane
+    
+    def get_point_value_in_hyperplane_equation(self, point, hyperplane):
+        """計算點在hyperplane直線方程式中的值"""
+        if hyperplane.slope == float('inf'):
+            # 垂直線: x = c
+            # 方程式可以寫成 x - c = 0
+            c = hyperplane.midpoint.x
+            return point.x - c
+        else:
+            # 一般直線: y = mx + b，重寫為 mx - y + b = 0
+            m = hyperplane.slope
+            b = hyperplane.midpoint.y - m * hyperplane.midpoint.x
+            return m * point.x - point.y + b
     
     def _calculate_slope(self):
         """計算中垂線的斜率"""
@@ -217,6 +243,5 @@ class VoronoiDiagram:
             edge.start_vertex = VoronoiVertex(cut_point.x, cut_point.y)
         else:
             edge.end_vertex = VoronoiVertex(cut_point.x, cut_point.y)
-
 
 
