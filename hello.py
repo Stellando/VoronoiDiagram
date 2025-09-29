@@ -1053,6 +1053,8 @@ class VoronoiGUI:
             
             print(f"左凸包大小: {left_hull_size}, 右凸包大小: {right_hull_size}")
             
+            # 註解掉凸包大小>3的特殊處理，統一使用鈍角三角形判斷
+            """
             # 如果任一凸包大小>3，跳過鈍角三角形的判斷和消邊邏輯
             if left_hull_size > 3 or right_hull_size > 3:
                 print("凸包大小>3，跳過鈍角三角形判斷，使用A_POINT邏輯")
@@ -1129,13 +1131,16 @@ class VoronoiGUI:
                             # 不同號，將end_vertex改設為cross點
                             intersected_edge.end_vertex = VoronoiVertex(cross_point.x, cross_point.y)
                             print(f"  -> end_vertex改設為cross點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
+                    #外心消線
+                    #if 
                 else:
                     print("邊沒有碰撞信息，跳過A點基準截斷")
                 
                 return
+            """
             
-            # 凸包大小<=3時，繼續進行鈍角三角形判斷
-            print("凸包大小<=3，繼續進行鈍角三角形判斷")
+            # 統一進行鈍角三角形判斷（不論凸包大小）
+            print("進行鈍角三角形判斷")
             is_obtuse = self.is_obtuse_triangle(edge_site1, edge_site2, third_point)
             obtuse_vertex = None
             
