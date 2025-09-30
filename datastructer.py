@@ -202,6 +202,44 @@ class VoronoiEdge:
             else:
                 return (VoronoiVertex(mx, my), VoronoiVertex(mx, my))
 
+    #計算中垂線(不受畫框限制)
+    @staticmethod
+    def get_perpendicular_bisector_unlimited(p1, p2, extend_length=2000):
+        """
+        計算中垂線的兩個端點，不受畫框限制
+        extend_length: 從中點向兩個方向延伸的長度
+        """
+        # 計算中垂線的中點
+        mx = (p1.x + p2.x) / 2
+        my = (p1.y + p2.y) / 2
+        dx = p2.x - p1.x
+        dy = p2.y - p1.y
+
+        if dx == 0:
+            # 垂直線的中垂線是水平線
+            return (VoronoiVertex(mx - extend_length, my), VoronoiVertex(mx + extend_length, my))
+        elif dy == 0:
+            # 水平線的中垂線是垂直線
+            return (VoronoiVertex(mx, my - extend_length), VoronoiVertex(mx, my + extend_length))
+        else:
+            # 計算中垂線的方向向量（垂直於原線段）
+            slope = -dx / dy
+            # 單位方向向量
+            direction_x = 1
+            direction_y = slope
+            # 歸一化
+            length = (direction_x**2 + direction_y**2) ** 0.5
+            direction_x /= length
+            direction_y /= length
+            
+            # 計算兩個端點：從中點向兩個方向延伸
+            start_x = mx - direction_x * extend_length
+            start_y = my - direction_y * extend_length
+            end_x = mx + direction_x * extend_length
+            end_y = my + direction_y * extend_length
+            
+            return (VoronoiVertex(start_x, start_y), VoronoiVertex(end_x, end_y))
+
 
 # 主資料結構
 class VoronoiDiagram:

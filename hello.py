@@ -8,14 +8,15 @@ import copy
 class MergeStep:
     def __init__(self, step_number, description, voronoi_diagram, 
                  left_hull=None, right_hull=None, merged_hull=None, 
-                 hyperplanes=None, debug_A=None, debug_B=None):
+                 hyperplanes=None, non_hyperplanes=None, debug_A=None, debug_B=None):
         self.step_number = step_number
         self.description = description
         self.voronoi_diagram = copy.deepcopy(voronoi_diagram)  # 深拷貝VD狀態
         self.left_hull = copy.deepcopy(left_hull) if left_hull else []
         self.right_hull = copy.deepcopy(right_hull) if right_hull else []
         self.merged_hull = copy.deepcopy(merged_hull) if merged_hull else []
-        self.hyperplanes = copy.deepcopy(hyperplanes) if hyperplanes else []
+        self.hyperplanes = copy.deepcopy(hyperplanes) if hyperplanes else []  # 橙色邊（merge產生的）
+        self.non_hyperplanes = copy.deepcopy(non_hyperplanes) if non_hyperplanes else []  # 藍色邊（原有的）
         self.debug_A = copy.deepcopy(debug_A) if debug_A else None
         self.debug_B = copy.deepcopy(debug_B) if debug_B else None
 
@@ -47,6 +48,8 @@ class VoronoiGUI:
         self.merge_steps = []  # 儲存每個merge步驟的狀態
         self.current_step = -1  # 當前顯示的步驟，-1表示顯示完整結果
         self.is_step_mode = False  # 是否處於step模式
+        self.previous_step_points = []  # 上次執行step時的points
+        self.steps_calculated = False  # 是否已經計算過步驟
 
         # 按鈕
         self.run_button = tk.Button(root, text="Run", command=self.run_voronoi)
@@ -157,7 +160,7 @@ class VoronoiGUI:
         # 共點則不做任何處理
         if p1.x == p2.x and p1.y == p2.y:
             return vd
-        start, end = VoronoiEdge.get_perpendicular_bisector_on_canvas(p1, p2)
+        start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(p1, p2)
         edge = VoronoiEdge(p1, p2)
         edge.set_start_vertex(start)
         edge.set_end_vertex(end)
@@ -187,7 +190,7 @@ class VoronoiGUI:
             for idx, (a, b) in enumerate(pairs):
                 d = (a.x - b.x)**2 + (a.y - b.y)**2
                 if d != max_d:
-                    start, end = VoronoiEdge.get_perpendicular_bisector_on_canvas(a, b)
+                    start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(a, b)
                     edge = VoronoiEdge(a, b)
                     edge.set_start_vertex(start)
                     edge.set_end_vertex(end)
@@ -198,10 +201,8 @@ class VoronoiGUI:
         # 不共線，處理三條中垂線
         vertex = self.calculate_circumcenter(p1, p2, p3)
         
-        # 檢查外心是否存在且在顯示範圍內
-        circumcenter_valid = (vertex is not None and 
-                             0 <= vertex.x <= 600 and 
-                             0 <= vertex.y <= 600)
+        # 檢查外心是否存在
+        circumcenter_valid = (vertex is not None)
         
         # 計算三邊長，找出最遠的兩點
         def dist2(a, b):
@@ -228,7 +229,7 @@ class VoronoiGUI:
                 if (a, b) == farthest_pair or (b, a) == farthest_pair:
                     continue
                     
-                start, end = VoronoiEdge.get_perpendicular_bisector_on_canvas(a, b)
+                start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(a, b)
                 edge = VoronoiEdge(a, b)
                 edge.set_start_vertex(start)
                 edge.set_end_vertex(end)
@@ -266,7 +267,7 @@ class VoronoiGUI:
                 pairs = [(p1, p2), (p2, p3), (p3, p1)]
                 points_list = [p1, p2, p3]
                 for idx, (a, b) in enumerate(pairs):
-                    start, end = VoronoiEdge.get_perpendicular_bisector_on_canvas(a, b)
+                    start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(a, b)
                     third = points_list[(idx + 2) % 3]
                     # 計算單位向量
                     def unit_vector(p_from, p_to):
@@ -307,7 +308,7 @@ class VoronoiGUI:
                 # 情況2：銳角三角形，原本邏輯不變
                 vd.add_vertex(vertex)
                 for idx, (a, b) in enumerate([(p1, p2), (p2, p3), (p3, p1)]):
-                    start, end = VoronoiEdge.get_perpendicular_bisector_on_canvas(a, b)
+                    start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(a, b)
                     third = [p1, p2, p3][(idx + 2) % 3]
                     # 計算單位向量
                     def unit_vector(p_from, p_to):
@@ -384,6 +385,20 @@ class VoronoiGUI:
             return right_vd
         if not right_vd.points:
             return left_vd
+        
+        # 在MERGE前，將左右子圖當中所有邊都設為非hyperplane
+        print("將所有現有邊設為非hyperplane（藍色）")
+        for edge in left_vd.edges:
+            edge.is_hyperplane = False
+            print(f"左子圖邊: ({edge.site1.x}, {edge.site1.y})-({edge.site2.x}, {edge.site2.y}) 設為非hyperplane")
+        
+        for edge in right_vd.edges:
+            edge.is_hyperplane = False
+            print(f"右子圖邊: ({edge.site1.x}, {edge.site1.y})-({edge.site2.x}, {edge.site2.y}) 設為非hyperplane")
+        
+        # 合併所有邊（現在都是非hyperplane）
+        merged_vd.edges = left_vd.edges + right_vd.edges
+        merged_vd.vertices = left_vd.vertices + right_vd.vertices
         
         # 計算左右分界線
         left_max_x = max(p.x for p in left_vd.points)
@@ -470,7 +485,7 @@ class VoronoiGUI:
         self.debug_B = B
         
         # 使用最終的A和B創建中垂線
-        midAB_start, midAB_end = VoronoiEdge.get_perpendicular_bisector_on_canvas(A, B)
+        midAB_start, midAB_end = VoronoiEdge.get_perpendicular_bisector_unlimited(A, B)
         
         # 按照Y值排序：Y小的設為起始點，Y大的設為結束點
         if midAB_start.y > midAB_end.y:
@@ -515,7 +530,7 @@ class VoronoiGUI:
         all_cross_points = []
         
         # 獲取初始的midAB邊緣交點，按Y值排序
-        midAB_start, midAB_end = VoronoiEdge.get_perpendicular_bisector_on_canvas(current_A, current_B)
+        midAB_start, midAB_end = VoronoiEdge.get_perpendicular_bisector_unlimited(current_A, current_B)
         if midAB_start.y > midAB_end.y:
             midAB_start, midAB_end = midAB_end, midAB_start
         
@@ -536,7 +551,7 @@ class VoronoiGUI:
                 current_midAB_start = current_cross
                 
                 # 重新計算完整的midAB邊界交點
-                temp_start, temp_end = VoronoiEdge.get_perpendicular_bisector_on_canvas(current_A, current_B)
+                temp_start, temp_end = VoronoiEdge.get_perpendicular_bisector_unlimited(current_A, current_B)
                 
                 # 計算從current_cross到兩個端點的Y方向距離
                 to_temp_start_y = temp_start.y - current_cross.y
@@ -652,7 +667,7 @@ class VoronoiGUI:
                     all_cross_points.append(close_point)
                     
                     # 處理接近的被碰撞邊（截斷）
-                    self.truncate_intersected_edge(close_edge, close_point, left_vd.points + right_vd.points, left_vd.points, right_vd.points, self.debug_left_hull, self.debug_right_hull, left_vd.edges + right_vd.edges)
+                    self.truncate_intersected_edge(close_edge, close_point, left_vd.points + right_vd.points, left_vd.points, right_vd.points, self.debug_left_hull, self.debug_right_hull, left_vd.edges + right_vd.edges, midAB)
                 
                 print(f"所有受影響的site點: {[(site.x, site.y) for site in affected_sites]}")
                 
@@ -697,7 +712,7 @@ class VoronoiGUI:
                 merged_vd.edges.append(current_midAB)
                 
                 # 處理主要被碰撞的邊
-                self.truncate_intersected_edge(intersected_edge, new_cross, left_vd.points + right_vd.points, left_vd.points, right_vd.points, self.debug_left_hull, self.debug_right_hull, left_vd.edges + right_vd.edges)
+                self.truncate_intersected_edge(intersected_edge, new_cross, left_vd.points + right_vd.points, left_vd.points, right_vd.points, self.debug_left_hull, self.debug_right_hull, left_vd.edges + right_vd.edges, midAB)
                 
                 # 更新AB - 考慮所有受影響的site點
                 updated = False
@@ -788,7 +803,7 @@ class VoronoiGUI:
                     break
                 
                 # 重新計算midAB邊緣交點（因為AB改變了）
-                new_midAB_start, new_midAB_end = VoronoiEdge.get_perpendicular_bisector_on_canvas(current_A, current_B)
+                new_midAB_start, new_midAB_end = VoronoiEdge.get_perpendicular_bisector_unlimited(current_A, current_B)
                 # 確保Y小的為起始點，Y大的為結束點
                 if new_midAB_start.y > new_midAB_end.y:
                     new_midAB_start, new_midAB_end = new_midAB_end, new_midAB_start
@@ -818,7 +833,7 @@ class VoronoiGUI:
                 print("無碰撞，延伸midAB到Y較大方向")
                 
                 # 重新計算完整的midAB，確保方向正確
-                temp_start, temp_end = VoronoiEdge.get_perpendicular_bisector_on_canvas(current_A, current_B)
+                temp_start, temp_end = VoronoiEdge.get_perpendicular_bisector_unlimited(current_A, current_B)
                 
                 # 確保從current_cross出發，朝向Y較大的方向
                 # 計算從current_cross到兩個端點的距離和方向
@@ -844,11 +859,8 @@ class VoronoiGUI:
                     extended_end_x = current_cross.x + direction_x * extend_factor
                     extended_end_y = current_cross.y + abs(direction_y) * extend_factor  # 確保Y增加
                     
-                    # 如果延伸到畫布外，限制在畫布內
-                    if extended_end_y > 600:
-                        factor = (600 - current_cross.y) / abs(direction_y * extend_factor)
-                        extended_end_x = current_cross.x + direction_x * extend_factor * factor
-                        extended_end_y = 600
+                    # 移除畫布限制，允許延伸到畫框外
+                    # 邊可以延伸到畫框外，不需要限制
                 else:
                     extended_end_x = target_end.x
                     extended_end_y = target_end.y
@@ -892,8 +904,14 @@ class VoronoiGUI:
             step_counter[0] += 1
             step_description = f"Merge step {step_counter[0]}: Merging {len(left_vd.points)} left points with {len(right_vd.points)} right points"
             
-            # 收集hyperplane邊（midAB組成的線段）
+            # 收集hyperplane邊（midAB組成的線段，橙色）
             hyperplane_edges = [edge for edge in merged_vd.edges if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane]
+            # 收集非hyperplane邊（原有的邊，藍色）
+            non_hyperplane_edges = [edge for edge in merged_vd.edges if not (hasattr(edge, 'is_hyperplane') and edge.is_hyperplane)]
+            
+            print(f"Step {step_counter[0]} 邊的分類統計:")
+            print(f"  - Hyperplane邊(橙色): {len(hyperplane_edges)}")
+            print(f"  - 非Hyperplane邊(藍色): {len(non_hyperplane_edges)}")
             
             merge_step = MergeStep(
                 step_number=step_counter[0],
@@ -903,6 +921,7 @@ class VoronoiGUI:
                 right_hull=right_hull,
                 merged_hull=self.debug_merged_hull,
                 hyperplanes=hyperplane_edges,
+                non_hyperplanes=non_hyperplane_edges,
                 debug_A=A,
                 debug_B=B
             )
@@ -1071,7 +1090,7 @@ class VoronoiGUI:
         print(f"          NEW_AB向量({A.x},{A.y})->({next_B.x},{next_B.y}) = {NEW_AB}")
         print(f"          外積 NEW_AB × AB = {cross_product}")
         
-        if cross_product >= 0:
+        if cross_product > 0:
             print("外積 >= 0，接受新的B")
             return True
         else:
@@ -1184,7 +1203,7 @@ class VoronoiGUI:
                 voronoi_diagram.vertices.remove(vertex)
                 print(f"已移除孤立頂點: ({vertex.x:.2f}, {vertex.y:.2f})")
     
-    def truncate_intersected_edge(self, intersected_edge, cross_point, all_points, left_points=None, right_points=None, left_hull=None, right_hull=None, all_edges=None):
+    def truncate_intersected_edge(self, intersected_edge, cross_point, all_points, left_points=None, right_points=None, left_hull=None, right_hull=None, all_edges=None, midAB=None):
         """截斷被碰撞的邊，根據是否為鈍角三角形採用不同邏輯"""
         
         # 檢查邊的端點是否包含VoronoiVertex
@@ -1443,12 +1462,49 @@ class VoronoiGUI:
             print(f"外心到start距離: {circumcenter_to_start_dist:.2f}, 到end距離: {circumcenter_to_end_dist:.2f}")
             print(f"原邊方向: start({intersected_edge.start_vertex.x:.2f}, {intersected_edge.start_vertex.y:.2f}) -> end({intersected_edge.end_vertex.x:.2f}, {intersected_edge.end_vertex.y:.2f})")
             
-            # 只進行截斷操作=
+            # 只進行截斷操作
             # 保持原來的邊方向不變
+            
+            # 新增判斷：檢查intersected_edge.site1和site2代入midAB方程式的結果
+            if midAB is not None:
+                # 計算site1和site2代入midAB方程式的值
+                # 使用midAB的方法來計算點在hyperplane方程式中的值
+                site1_value = midAB.get_point_value_in_hyperplane_equation(intersected_edge.site1, midAB)
+                site2_value = midAB.get_point_value_in_hyperplane_equation(intersected_edge.site2, midAB)
+                
+                print(f"midAB方程式檢查: site1值={site1_value:.2f}, site2值={site2_value:.2f}")
+                
+                # 如果同號（乘積>0），則需要改變start或end中與結果不同號的那個
+                if site1_value * site2_value > 0:
+                    print("site1和site2在midAB方程式中同號，檢查start和end端點")
+                    
+                    # 計算start和end端點代入midAB方程式的值
+                    start_value = midAB.get_point_value_in_hyperplane_equation(intersected_edge.start_vertex, midAB)
+                    end_value = midAB.get_point_value_in_hyperplane_equation(intersected_edge.end_vertex, midAB)
+                    
+                    print(f"端點值: start={start_value:.2f}, end={end_value:.2f}")
+                    
+                    # 檢查哪個端點與site1/site2的結果不同號
+                    site_sign = 1 if site1_value > 0 else -1
+                    start_sign = 1 if start_value > 0 else -1
+                    end_sign = 1 if end_value > 0 else -1
+                    
+                    if start_sign != site_sign:
+                        print("start端點與site結果不同號，將start改為cross點")
+                        if start_is_vertex and start_vertex:
+                            self.remove_edge_from_vertex(start_vertex, intersected_edge)
+                        intersected_edge.start_vertex = VoronoiVertex(cross_point.x, cross_point.y)
+                        return
+                    elif end_sign != site_sign:
+                        print("end端點與site結果不同號，將end改為cross點")
+                        if end_is_vertex and end_vertex:
+                            self.remove_edge_from_vertex(end_vertex, intersected_edge)
+                        intersected_edge.end_vertex = VoronoiVertex(cross_point.x, cross_point.y)
+                        return
+            
             #判斷為左子圖或是右子圖
-
             #如果被切線的.site屬於左子圖
-            if (intersected_edge.site1 in left_points) and (intersected_edge.site2 in left_points):
+            elif (intersected_edge.site1 in left_points) and (intersected_edge.site2 in left_points):
                 print("被碰撞邊屬於左半邊圖形")
                 if (intersected_edge.start_vertex.x < intersected_edge.end_vertex.x):
                     # start端更接近左側，截斷end端
@@ -1658,6 +1714,63 @@ class VoronoiGUI:
         return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x)
     
     #繪製部分
+    def clip_line_to_canvas(self, x1, y1, x2, y2, canvas_width=600, canvas_height=600):
+        """將線段裁剪到畫布範圍內，使用Cohen-Sutherland算法的簡化版本"""
+        # 定義區域碼
+        INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
+        
+        def get_region_code(x, y):
+            code = INSIDE
+            if x < 0:
+                code |= LEFT
+            elif x > canvas_width:
+                code |= RIGHT
+            if y < 0:
+                code |= TOP
+            elif y > canvas_height:
+                code |= BOTTOM
+            return code
+        
+        code1 = get_region_code(x1, y1)
+        code2 = get_region_code(x2, y2)
+        
+        while True:
+            # 如果兩點都在畫布內
+            if code1 == 0 and code2 == 0:
+                return x1, y1, x2, y2
+            
+            # 如果兩點都在畫布外的同一側
+            if code1 & code2 != 0:
+                return None
+            
+            # 選擇一個在畫布外的點
+            if code1 != 0:
+                code_out = code1
+            else:
+                code_out = code2
+            
+            # 計算交點
+            if code_out & TOP:  # 與上邊界相交
+                x = x1 + (x2 - x1) * (0 - y1) / (y2 - y1)
+                y = 0
+            elif code_out & BOTTOM:  # 與下邊界相交
+                x = x1 + (x2 - x1) * (canvas_height - y1) / (y2 - y1)
+                y = canvas_height
+            elif code_out & RIGHT:  # 與右邊界相交
+                y = y1 + (y2 - y1) * (canvas_width - x1) / (x2 - x1)
+                x = canvas_width
+            elif code_out & LEFT:  # 與左邊界相交
+                y = y1 + (y2 - y1) * (0 - x1) / (x2 - x1)
+                x = 0
+            
+            # 更新點和區域碼
+            if code_out == code1:
+                x1, y1 = x, y
+                code1 = get_region_code(x1, y1)
+            else:
+                x2, y2 = x, y
+                code2 = get_region_code(x2, y2)
+    
     def draw_voronoi(self):
         self.canvas.delete("all")  # 清空畫布
         self.canvas.configure(bg="white")
@@ -1694,10 +1807,17 @@ class VoronoiGUI:
                 else:
                     edge_color = "blue"
                     line_width = 1
-                    
-                self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y,
-                                    edge.end_vertex.x, edge.end_vertex.y, 
-                                    fill=edge_color, width=line_width)
+                
+                # 裁剪線段到畫布範圍內
+                clipped = self.clip_line_to_canvas(
+                    edge.start_vertex.x, edge.start_vertex.y,
+                    edge.end_vertex.x, edge.end_vertex.y
+                )
+                
+                # 如果線段與畫布有交集，則繪製
+                if clipped:
+                    x1, y1, x2, y2 = clipped
+                    self.canvas.create_line(x1, y1, x2, y2, fill=edge_color, width=line_width)
         
         # 繪製調試信息：左側凸包（順時針，紅色）
         if self.show_convex_hull.get() and self.debug_left_hull:
@@ -1760,8 +1880,33 @@ class VoronoiGUI:
             messagebox.showwarning("Warning", "No points to process")
             return
         
-        # 如果還沒初始化或者不在step模式，進行初始化
-        if not hasattr(self, 'is_step_mode') or not self.is_step_mode or not self.merge_steps:
+        # 檢查點是否發生變化
+        points_changed = self.points != self.previous_step_points
+        
+        # 如果點沒有變化且已經計算過步驟，直接顯示
+        if (not points_changed and hasattr(self, 'steps_calculated') and 
+            self.steps_calculated and self.merge_steps):
+            if not self.is_step_mode:
+                # 從第一步開始顯示
+                self.is_step_mode = True
+                self.current_step = 0
+                self.show_step(0)
+                #print(f"Points unchanged, showing first step (total {len(self.merge_steps)} steps)")
+            else:
+                # 已經在step模式中，顯示下一步
+                if self.current_step < len(self.merge_steps) - 1:
+                    self.current_step += 1
+                    self.show_step(self.current_step)
+                else:
+                    # 已經到最後一步，顯示完成圖案
+                    self.current_step = -1
+                    self.is_step_mode = False
+                    self.draw_voronoi()
+                    self.root.title("Voronoi Diagram - Complete")
+            return
+        
+        # 如果點發生變化或未計算過，重新計算
+        if points_changed or not hasattr(self, 'steps_calculated') or not self.steps_calculated:
             # 清空之前的資料
             self.vd.edges.clear()
             self.vd.vertices.clear() 
@@ -1769,15 +1914,24 @@ class VoronoiGUI:
             self.merge_steps.clear()
             self.current_step = -1
             self.is_step_mode = True
+            self.steps_calculated = False  # 標記為未計算
+            
+            # 保存當前的points
+            self.previous_step_points = self.points[:]  # 複製列表
             
             # 執行算法並記錄步驟
             points = [Point(x, y) for x, y in self.points]
             self.vd = self.build_voronoi(points, record_steps=True)
             
+            # 標記步驟已計算完成
+            self.steps_calculated = True
+            
             # 如果有步驟記錄，顯示第一步
             if self.merge_steps:
                 self.current_step = 0
                 self.show_step(0)
+                if points_changed:
+                    print(f"Points changed, automatically showing first step (total {len(self.merge_steps)} steps)")
             else:
                 # 沒有merge步驟（點數過少），直接顯示結果
                 self.is_step_mode = False
