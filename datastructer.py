@@ -4,6 +4,17 @@ class Point:
     def __init__(self, x, y):
         self.x = x
         self.y = y
+    
+    def __eq__(self, other):
+        if not isinstance(other, Point):
+            return False
+        return self.x == other.x and self.y == other.y
+    
+    def __hash__(self):
+        return hash((self.x, self.y))
+    
+    def __repr__(self):
+        return f"Point({self.x}, {self.y})"
 
 class VoronoiVertex:
     def __init__(self, x, y):
@@ -202,13 +213,10 @@ class VoronoiEdge:
             else:
                 return (VoronoiVertex(mx, my), VoronoiVertex(mx, my))
 
-    #計算中垂線(不受畫框限制)
+    #計算無限制中垂線（延伸到很遠的距離）
     @staticmethod
-    def get_perpendicular_bisector_unlimited(p1, p2, extend_length=2000):
-        """
-        計算中垂線的兩個端點，不受畫框限制
-        extend_length: 從中點向兩個方向延伸的長度
-        """
+    def get_perpendicular_bisector_unlimited(p1, p2, extension=2000):
+        """計算兩點之間的中垂線，延伸到指定距離"""
         # 計算中垂線的中點
         mx = (p1.x + p2.x) / 2
         my = (p1.y + p2.y) / 2
@@ -217,26 +225,24 @@ class VoronoiEdge:
 
         if dx == 0:
             # 垂直線的中垂線是水平線
-            return (VoronoiVertex(mx - extend_length, my), VoronoiVertex(mx + extend_length, my))
+            return (VoronoiVertex(mx - extension, my), VoronoiVertex(mx + extension, my))
         elif dy == 0:
             # 水平線的中垂線是垂直線
-            return (VoronoiVertex(mx, my - extend_length), VoronoiVertex(mx, my + extend_length))
+            return (VoronoiVertex(mx, my - extension), VoronoiVertex(mx, my + extension))
         else:
-            # 計算中垂線的方向向量（垂直於原線段）
+            # 計算中垂線的斜率（垂直於原線段）
             slope = -dx / dy
-            # 單位方向向量
-            direction_x = 1
-            direction_y = slope
-            # 歸一化
-            length = (direction_x**2 + direction_y**2) ** 0.5
-            direction_x /= length
-            direction_y /= length
             
-            # 計算兩個端點：從中點向兩個方向延伸
-            start_x = mx - direction_x * extend_length
-            start_y = my - direction_y * extend_length
-            end_x = mx + direction_x * extend_length
-            end_y = my + direction_y * extend_length
+            # 計算方向向量（單位向量）
+            length = (1 + slope * slope) ** 0.5
+            unit_x = 1 / length
+            unit_y = slope / length
+            
+            # 計算兩個延伸點
+            start_x = mx - extension * unit_x
+            start_y = my - extension * unit_y
+            end_x = mx + extension * unit_x
+            end_y = my + extension * unit_y
             
             return (VoronoiVertex(start_x, start_y), VoronoiVertex(end_x, end_y))
 
