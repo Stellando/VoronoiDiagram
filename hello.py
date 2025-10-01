@@ -103,6 +103,9 @@ class VoronoiGUI:
         # 記錄上一輪被截斷改變的端點
         self.last_truncated_vertices = []
         
+        # 邊生命值系統：端點引用追蹤
+        self.vertex_references = {}  # {(x, y): [edge1, edge2, ...]} 追蹤每個端點被哪些邊引用
+        
         # UI控制變量
         self.show_convex_hull = tk.BooleanVar(value=False)  # 預設不顯示凸包
         self.show_merged_hull = tk.BooleanVar(value=False)  # 預設不顯示合併凸包
@@ -162,6 +165,182 @@ class VoronoiGUI:
         """處理鼠標離開畫布事件"""
         self.coord_display.config(text="X: --\nY: --")
     
+    def list_all_edge_vertices(self):
+        """列出所有邊的頂點值"""
+        if not self.vd or not self.vd.edges:
+            print("ℹ️ 沒有邊可以顯示")
+            return
+        
+        print("\n" + "="*80)
+        print("📊 所有邊的頂點值列表")
+        print("="*80)
+        
+        total_edges = len(self.vd.edges)
+        edges_with_vertices = 0
+        edges_with_circumcenter = 0
+        
+        # 檢測重複邊
+        print("🔍 首先檢測重複邊...")
+        duplicate_pairs = []
+        for i in range(len(self.vd.edges)):
+            for j in range(i + 1, len(self.vd.edges)):
+                edge1 = self.vd.edges[i]
+                edge2 = self.vd.edges[j]
+                
+                if self.are_edges_duplicate(edge1, edge2):
+                    duplicate_pairs.append((i + 1, j + 1, edge1, edge2))
+        
+        if duplicate_pairs:
+            print(f"⚠️ 發現 {len(duplicate_pairs)} 對重複邊:")
+            for i, (idx1, idx2, edge1, edge2) in enumerate(duplicate_pairs):
+                site1_1, site2_1 = edge1.get_bisected_points()
+                site1_2, site2_2 = edge2.get_bisected_points()
+                print(f"   重複邊組 {i+1}: 邊{idx1} 和 邊{idx2}")
+                print(f"     邊{idx1}: 平分點 ({site1_1.x}, {site1_1.y}) 和 ({site2_1.x}, {site2_1.y})")
+                print(f"     邊{idx2}: 平分點 ({site1_2.x}, {site1_2.y}) 和 ({site2_2.x}, {site2_2.y})")
+        else:
+            print("✅ 沒有發現重複邊")
+        
+        print("\n" + "-"*80)
+        
+        for i, edge in enumerate(self.vd.edges, 1):
+            # 獲取平分的兩個點
+            site1, site2 = edge.get_bisected_points()
+            
+            print(f"\n🔗 邊 {i}/{total_edges}:")
+            print(f"   • 平分點: ({site1.x:.1f}, {site1.y:.1f}) 和 ({site2.x:.1f}, {site2.y:.1f})")
+            
+            # 頂點信息
+            if edge.start_vertex and edge.end_vertex:
+                edges_with_vertices += 1
+                print(f"   • 起始頂點: ({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f})")
+                print(f"   • 結束頂點: ({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})")
+                
+                # 計算邊的長度
+                length = ((edge.end_vertex.x - edge.start_vertex.x)**2 + 
+                         (edge.end_vertex.y - edge.start_vertex.y)**2) ** 0.5
+                print(f"   • 邊長度: {length:.2f}")
+            else:
+                print(f"   • 頂點: 無限邊或未定義")
+            
+            # 外心信息
+            if hasattr(edge, 'circumcenter') and edge.circumcenter:
+                edges_with_circumcenter += 1
+                print(f"   • 外心: ({edge.circumcenter.x:.2f}, {edge.circumcenter.y:.2f})")
+            
+            # 特殊標記
+            if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane:
+                print(f"   • 類型: 🗺️ 超平面 (midAB)")
+            else:
+                print(f"   • 類型: 🟦 一般 Voronoi 邊")
+            
+            # 碰撞信息
+            if hasattr(edge, 'is_cross') and edge.is_cross:
+                print(f"   • 碰撞狀態: ✅ 已被碰撞")
+                if hasattr(edge, 'cross_point') and edge.cross_point:
+                    print(f"   • 碰撞點: ({edge.cross_point.x:.2f}, {edge.cross_point.y:.2f})")
+        
+        print("\n" + "-"*80)
+        print(f"📊 統計總結:")
+        print(f"   • 總邊數: {total_edges}")
+        print(f"   • 有頂點的邊: {edges_with_vertices}")
+        print(f"   • 有外心的邊: {edges_with_circumcenter}")
+        print(f"   • 無限邊: {total_edges - edges_with_vertices}")
+        print("-"*80)
+
+    def perform_final_edge_cleanup(self):
+        """最終清理：移除任何仍然具有歷史截斷端點的邊"""
+        if not hasattr(self, 'last_truncated_vertices_for_final_check') or not self.last_truncated_vertices_for_final_check:
+            return
+        
+        edges_to_remove = []
+        
+        print(f"檢查 {len(self.vd.edges)} 條邊是否具有 {len(self.last_truncated_vertices_for_final_check)} 個歷史截斷端點...")
+        
+        for i, edge in enumerate(self.vd.edges):
+            if not edge.start_vertex or not edge.end_vertex:
+                continue
+                
+            for vertex in self.last_truncated_vertices_for_final_check:
+                # 檢查起始頂點
+                start_distance = ((edge.start_vertex.x - vertex.x)**2 + (edge.start_vertex.y - vertex.y)**2) ** 0.5
+                end_distance = ((edge.end_vertex.x - vertex.x)**2 + (edge.end_vertex.y - vertex.y)**2) ** 0.5
+                
+                if start_distance < 5 or end_distance < 5:
+                    site1, site2 = edge.get_bisected_points()
+                    print(f"🗑️ 找到需要移除的邊 {i+1}: start({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f}) -> end({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})")
+                    print(f"   平分點: ({site1.x}, {site1.y}) 和 ({site2.x}, {site2.y})")
+                    print(f"   匹配截斷端點: ({vertex.x:.2f}, {vertex.y:.2f}), 起始距離: {start_distance:.2f}, 結束距離: {end_distance:.2f}")
+                    edges_to_remove.append(edge)
+                    break
+        
+        # 移除找到的邊
+        removed_count = 0
+        for edge in edges_to_remove:
+            if edge in self.vd.edges:
+                self.vd.edges.remove(edge)
+                removed_count += 1
+        
+        if removed_count > 0:
+            print(f"✅ 最終清理完成：移除了 {removed_count} 條具有截斷端點的邊")
+            print(f"   剩餘邊數: {len(self.vd.edges)}")
+            
+            # 重新輸出邊列表
+            print(f"\n重新輸出清理後的邊列表:")
+            self.list_all_edge_vertices()
+        else:
+            print(f"✅ 最終檢查完成：沒有發現需要移除的邊")
+
+    def are_edges_duplicate(self, edge1, edge2):
+        """檢查兩條邊是否重複（平分相同的兩個點）"""
+        site1_1, site2_1 = edge1.get_bisected_points()
+        site1_2, site2_2 = edge2.get_bisected_points()
+        
+        # 檢查兩條邊是否平分相同的兩個點（順序可能不同）
+        same_sites_1 = (site1_1.x == site1_2.x and site1_1.y == site1_2.y and 
+                       site2_1.x == site2_2.x and site2_1.y == site2_2.y)
+        same_sites_2 = (site1_1.x == site2_2.x and site1_1.y == site2_2.y and 
+                       site2_1.x == site1_2.x and site2_1.y == site1_2.y)
+        
+        return same_sites_1 or same_sites_2
+
+    def remove_duplicate_edges(self):
+        """移除重複的邊"""
+        if not self.vd or not self.vd.edges:
+            return 0
+        
+        edges_to_remove = []
+        removed_count = 0
+        
+        print("🧹 開始移除重複邊...")
+        
+        for i in range(len(self.vd.edges)):
+            if self.vd.edges[i] in edges_to_remove:
+                continue
+                
+            for j in range(i + 1, len(self.vd.edges)):
+                if self.vd.edges[j] in edges_to_remove:
+                    continue
+                    
+                if self.are_edges_duplicate(self.vd.edges[i], self.vd.edges[j]):
+                    # 標記較後面的邊待移除
+                    edges_to_remove.append(self.vd.edges[j])
+                    site1, site2 = self.vd.edges[j].get_bisected_points()
+                    print(f"   標記移除重複邊 {j+1}: 平分點 ({site1.x}, {site1.y}) 和 ({site2.x}, {site2.y})")
+        
+        # 實際移除邊
+        for edge in edges_to_remove:
+            if edge in self.vd.edges:
+                self.vd.edges.remove(edge)
+                removed_count += 1
+        
+        if removed_count > 0:
+            print(f"✅ 移除了 {removed_count} 條重複邊，剩餘邊數: {len(self.vd.edges)}")
+        else:
+            print("✅ 沒有發現重複邊需要移除")
+        
+        return removed_count
+
     def update_stats_display(self):
         """更新統計信息顯示"""
         point_count = len(self.points)
@@ -193,10 +372,19 @@ class VoronoiGUI:
         self.run_executed = False
         self.steps_calculated = False
         
+        # 清空previous_run_points，強制下次執行
+        self.previous_run_points = []
+        
+        print(f"✨ 添加新點 ({x}, {y})，重置執行狀態")
+        
         self.update_stats_display()  # 更新統計信息
     
     def refresh_display(self):
-        """重新繪製顯示內容"""
+        """重新繪製顯示內容 - 純視覺更新，不修改任何邊或頂點"""
+        # 記錄當前邊數，用於驗證
+        initial_edge_count = len(self.vd.edges) if hasattr(self, 'vd') and self.vd else 0
+        print(f"🎨 純視覺更新開始：當前邊數 {initial_edge_count}")
+        
         if self.is_step_mode and hasattr(self, 'merge_steps') and self.merge_steps:
             # 在step模式下，重新顯示當前步驟
             if 0 <= self.current_step < len(self.merge_steps):
@@ -205,8 +393,15 @@ class VoronoiGUI:
                 # 如果不在有效範圍內，顯示完整結果
                 self.draw_voronoi()
         elif hasattr(self, 'vd') and self.vd:
-            # 正常模式下
+            # 正常模式下，只進行繪製，不修改任何數據
             self.draw_voronoi()
+        
+        # 驗證邊數沒有改變
+        final_edge_count = len(self.vd.edges) if hasattr(self, 'vd') and self.vd else 0
+        if final_edge_count != initial_edge_count:
+            print(f"⚠️ 警告：refresh_display 意外修改了邊數！{initial_edge_count} -> {final_edge_count}")
+        else:
+            print(f"✅ 視覺更新完成，邊數保持不變: {final_edge_count}")
     
     
     #主演算法部分
@@ -220,39 +415,81 @@ class VoronoiGUI:
         
         # 如果點沒有變化且已經執行過，不重複執行
         if (not points_changed and hasattr(self, 'run_executed') and 
-            self.run_executed and self.vd.edges):
-            print("點未變化且已執行過，跳過重複執行")
-            # 顯示最終完成的圖形
+            self.run_executed and hasattr(self, 'merge_steps') and self.merge_steps):
+            print("✅ 點未變化且已執行過，顯示 Step by Step 最後步驟")
+            # 顯示 Step by Step 的最後一個步驟
             self.is_step_mode = False
             self.current_step = -1
+            
+            # 使用最後一個 merge step 的結果
+            if self.merge_steps:
+                last_step = self.merge_steps[-1]
+                self.vd = last_step.voronoi_diagram
+                
+                # 設置調試信息以便顯示凸包
+                if hasattr(last_step, 'left_hull'):
+                    self.debug_left_hull = last_step.left_hull
+                if hasattr(last_step, 'right_hull'):
+                    self.debug_right_hull = last_step.right_hull
+                if hasattr(last_step, 'merged_hull'):
+                    self.debug_merged_hull = last_step.merged_hull
+                if hasattr(last_step, 'debug_A'):
+                    self.debug_A = last_step.debug_A
+                if hasattr(last_step, 'debug_B'):
+                    self.debug_B = last_step.debug_B
+            
             self.draw_voronoi()
             self.update_stats_display()
             self.update_step_display()
             return
         
-        print(f"執行Voronoi算法，點數: {len(self.points)}")
+        print(f"🚀 執行 Step by Step 算法並顯示最後步驟，點數: {len(self.points)}")
         
-        # 清空之前的 Voronoi Diagram 和步驟資料
-        self.vd.edges.clear()
-        self.vd.vertices.clear()
-        self.vd.point_to_edges.clear()
+        # 清空之前的資料
         self.merge_steps.clear()
         self.current_step = -1
         self.is_step_mode = False
-        
-        # 重置step相關的狀態，確保Step by Step功能可用
-        self.steps_calculated = False
-        if hasattr(self, 'previous_step_points'):
-            self.previous_step_points = []  # 清空，強制重新計算
         
         # 記錄當前執行狀態
         self.previous_run_points = self.points[:]  # 複製當前點列表
         self.run_executed = True  # 標記已執行
         
-        # 構建 Voronoi Diagram
-        points = [Point(x, y) for x, y in self.points]  # 轉換為 Point 物件
-        all_steps = []  # 正常模式不記錄步驟
-        self.vd = self.build_voronoi(points, record_steps=False, all_steps=all_steps)
+        # 重置step相關的狀態
+        self.steps_calculated = False
+        if hasattr(self, 'previous_step_points'):
+            self.previous_step_points = []
+        
+        # 執行 Step by Step 算法（記錄所有步驟）
+        points = [Point(x, y) for x, y in self.points]
+        all_steps = []  # 用於收集所有步驟
+        final_vd = self.build_voronoi(points, record_steps=True, all_steps=all_steps)
+        
+        # 將步驟保存到 merge_steps
+        self.merge_steps = all_steps
+        self.steps_calculated = True
+        
+        # 使用最後一個步驟的結果作為最終結果
+        if self.merge_steps:
+            last_step = self.merge_steps[-1]
+            self.vd = last_step.voronoi_diagram
+            
+            # 設置調試信息以便顯示凸包
+            if hasattr(last_step, 'left_hull'):
+                self.debug_left_hull = last_step.left_hull
+            if hasattr(last_step, 'right_hull'):
+                self.debug_right_hull = last_step.right_hull
+            if hasattr(last_step, 'merged_hull'):
+                self.debug_merged_hull = last_step.merged_hull
+            if hasattr(last_step, 'debug_A'):
+                self.debug_A = last_step.debug_A
+            if hasattr(last_step, 'debug_B'):
+                self.debug_B = last_step.debug_B
+            
+            print(f"✅ 使用最後一個步驟的結果，邊數: {len(self.vd.edges)}")
+        else:
+            # 如果沒有步驟（點數太少），使用直接計算的結果
+            self.vd = final_vd
+            print(f"✅ 使用直接計算的結果，邊數: {len(self.vd.edges)}")
         
         # 繪製結果
         self.draw_voronoi()
@@ -260,6 +497,11 @@ class VoronoiGUI:
         # 更新顯示信息
         self.update_stats_display()
         self.update_step_display()
+        
+        # 列出所有邊的頂點值
+        self.list_all_edge_vertices()
+        
+        print(f"🎆 RUN 完成：顯示與 Step by Step 最後步驟相同的結果")
 
     # 建立Voronoi Diagram
     def build_voronoi(self, points, record_steps=False, step_counter=None, all_steps=None):
@@ -560,14 +802,36 @@ class VoronoiGUI:
             edge.is_hyperplane = False
             print(f"右子圖邊: ({edge.site1.x}, {edge.site1.y})-({edge.site2.x}, {edge.site2.y}) 設為非hyperplane")
         
-        # 合併所有邊（現在都是非hyperplane）
-        merged_vd.edges = left_vd.edges + right_vd.edges
-        merged_vd.vertices = left_vd.vertices + right_vd.vertices
+        # 暫不合併邊，等待迭代處理完成後再合併
+        # merged_vd.edges = left_vd.edges + right_vd.edges
+        # merged_vd.vertices = left_vd.vertices + right_vd.vertices
         
         # 計算左右分界線
         left_max_x = max(p.x for p in left_vd.points)
         right_min_x = min(p.x for p in right_vd.points)
         separator_x = (left_max_x + right_min_x) / 2
+        
+        # 在迭代開始前設置邊列表供生命值系統使用
+        print(f"\n🔧 *** 在迭代前設置邊列表供生命值系統使用 *** 🔧")
+        print(f"👉 left_vd.edges: {len(left_vd.edges)} 條")
+        print(f"👉 right_vd.edges: {len(right_vd.edges)} 條")
+        
+        # 設置邊列表供生命值系統使用（使用副本避免被修改）
+        self.left_edges_for_checking = left_vd.edges.copy()
+        self.right_edges_for_checking = right_vd.edges.copy()
+        
+        print(f"✅ 已設置 left_edges_for_checking: {len(self.left_edges_for_checking)} 條")
+        print(f"✅ 已設置 right_edges_for_checking: {len(self.right_edges_for_checking)} 條")
+        
+        # 初始化邊生命值系統：清空引用記錄並重新建立
+        self.vertex_references.clear()
+        
+        # 註冊所有邊的端點引用
+        all_normal_edges = left_vd.edges + right_vd.edges
+        for edge in all_normal_edges:
+            self.register_edge_vertices(edge)
+            
+        print(f"🔧 *** 邊列表設置完成，迭代開始 *** 🔧\n")
         
         # 1.找到X最大的A點和X最小的B點
         A = max(left_vd.points, key=lambda p: p.x)
@@ -707,18 +971,8 @@ class VoronoiGUI:
             print(f"當前 A: ({current_A.x}, {current_A.y}), B: ({current_B.x}, {current_B.y})")
             print(f"起始點: ({current_cross.x:.2f}, {current_cross.y:.2f})")
             
-            # 在每輪迭代開始時，清理以歷史被截斷端點為起終點的邊
-            if iteration > 0 and self.last_truncated_vertices:
-                print(f"清理歷史被截斷的端點相關邊 ({len(self.last_truncated_vertices)} 個端點)")
-                for i, vertex in enumerate(self.last_truncated_vertices):
-                    print(f"  歷史截斷端點 {i+1}: ({vertex.x:.2f}, {vertex.y:.2f})")
-                
-                # 分別清理左右兩邊的邊列表
-                print("清理左邊edges:")
-                self.cleanup_edges_with_truncated_vertices(left_vd.edges, self.last_truncated_vertices)
-                print("清理右邊edges:")
-                self.cleanup_edges_with_truncated_vertices(right_vd.edges, self.last_truncated_vertices)
-                # 不要清空記錄，保留歷史截斷端點用於後續檢查
+            # 暫時禁用迭代中的清理，需要重新設計基於端點引用計數的系統
+            pass
             
             # 創建從current_cross開始的midAB
             if iteration == 0:
@@ -1081,12 +1335,29 @@ class VoronoiGUI:
         self.debug_B = current_B
         
         # 合併結果
-        merged_vd.edges.extend(left_vd.edges)
-        merged_vd.edges.extend(right_vd.edges)
-        # midAB 已經在上面的處理中加入，不需要重複添加
+        print(f"開始合併邊...")
+        print(f"合併前 left_vd 邊數: {len(left_vd.edges)}")
+        print(f"合併前 right_vd 邊數: {len(right_vd.edges)}")
         
-        merged_vd.vertices.extend(left_vd.vertices)
-        merged_vd.vertices.extend(right_vd.vertices)
+        # 基於邊生命值系統清理死亡的邊
+        all_normal_edges = left_vd.edges + right_vd.edges
+        alive_edges = []
+        dead_edges = []
+        
+        for edge in all_normal_edges:
+            if edge.life > 0:
+                alive_edges.append(edge)
+            else:
+                dead_edges.append(edge)
+        
+        print(f"\n🔄 清理結果: 存活{len(alive_edges)}條，死亡{len(dead_edges)}條")
+        
+        existing_midab_edges = [edge for edge in merged_vd.edges if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane]
+        merged_vd.edges = alive_edges + existing_midab_edges
+        print(f"🎆 最終結果: {len(alive_edges)}條正常邊 + {len(existing_midab_edges)}條midAB邊 = 總共{len(merged_vd.edges)}條邊")
+        
+        # 合併頂點
+        merged_vd.vertices = left_vd.vertices + right_vd.vertices
         # midAB 的端點也已經在上面處理中加入
         
         # 計算合併後的凸包
@@ -1123,8 +1394,8 @@ class VoronoiGUI:
             else:
                 self.merge_steps.append(merge_step)
         
-        # 在merge完成後清空歷史截斷端點記錄
-        print(f"Merge完成，清空 {len(self.last_truncated_vertices)} 個歷史截斷端點記錄")
+        # 在merge完成後清空歷史截斷端點記錄，但保存一份用於最終檢查
+        self.last_truncated_vertices_for_final_check = self.last_truncated_vertices.copy()  # 保存副本
         self.last_truncated_vertices.clear()
         
         return merged_vd
@@ -1403,79 +1674,209 @@ class VoronoiGUI:
                 voronoi_diagram.vertices.remove(vertex)
                 print(f"已移除孤立頂點: ({vertex.x:.2f}, {vertex.y:.2f})")
     
+    def add_vertex_reference(self, vertex, edge):
+        """添加端點引用
+        
+        Args:
+            vertex: VoronoiVertex 端點
+            edge: VoronoiEdge 引用該端點的邊
+        """
+        if vertex is None:
+            return
+            
+        vertex_key = (round(vertex.x, 2), round(vertex.y, 2))
+        if vertex_key not in self.vertex_references:
+            self.vertex_references[vertex_key] = []
+        
+        if edge not in self.vertex_references[vertex_key]:
+            self.vertex_references[vertex_key].append(edge)
+    
+    def remove_vertex_reference(self, vertex, edge):
+        """移除端點引用
+        
+        Args:
+            vertex: VoronoiVertex 端點
+            edge: VoronoiEdge 不再引用該端點的邊
+        """
+        if vertex is None:
+            return
+            
+        vertex_key = (round(vertex.x, 2), round(vertex.y, 2))
+        if vertex_key in self.vertex_references and edge in self.vertex_references[vertex_key]:
+            self.vertex_references[vertex_key].remove(edge)
+            
+            # 如果沒有邊引用這個端點，清理記錄
+            if not self.vertex_references[vertex_key]:
+                del self.vertex_references[vertex_key]
+    
+    def register_edge_vertices(self, edge):
+        """註冊邊的端點引用
+        
+        Args:
+            edge: VoronoiEdge 要註冊的邊
+        """
+        if edge.start_vertex:
+            self.add_vertex_reference(edge.start_vertex, edge)
+        if edge.end_vertex:
+            self.add_vertex_reference(edge.end_vertex, edge)
+    
+    def update_vertex_life_on_move(self, old_vertex, new_vertex, moved_edge):
+        """當端點被移動時，更新其他引用該端點的邊的生命值
+        
+        Args:
+            old_vertex: VoronoiVertex 舊的端點位置
+            new_vertex: VoronoiVertex 新的端點位置  
+            moved_edge: VoronoiEdge 被截斷移動端點的邊（不扣自己的命）
+        """
+        print(f"\n💝 === 開始生命值更新檢查 === 💝")
+        print(f"👀 被移動的端點: ({old_vertex.x:.2f}, {old_vertex.y:.2f}) -> ({new_vertex.x:.2f}, {new_vertex.y:.2f})")
+        
+        if old_vertex is None:
+            print(f"⚠️ old_vertex 為 None，跳過處理")
+            return
+            
+        # 直接遍歷所有已知的邊，尋找引用舊端點的邊
+        all_edges_to_check = []
+        if hasattr(self, 'left_edges_for_checking'):
+            all_edges_to_check.extend(self.left_edges_for_checking)
+            print(f"👉 檢查左邊列表: {len(self.left_edges_for_checking)} 條邊")
+        else:
+            print(f"⚠️ 沒有 left_edges_for_checking 屬性")
+            
+        if hasattr(self, 'right_edges_for_checking'):
+            all_edges_to_check.extend(self.right_edges_for_checking)
+            print(f"👉 檢查右邊列表: {len(self.right_edges_for_checking)} 條邊")
+        else:
+            print(f"⚠️ 沒有 right_edges_for_checking 屬性")
+        
+        print(f"👀 總共檢查 {len(all_edges_to_check)} 條邊")
+        
+        moved_site1, moved_site2 = moved_edge.get_bisected_points()
+        print(f"🚀 被移動的邊（不扣血）: [{moved_site1.x}, {moved_site1.y}]-[{moved_site2.x}, {moved_site2.y}]")
+        
+        checked_count = 0
+        deducted_count = 0
+        
+        # 增加誤差容忍度 - 從 0.1 增加到 5.0 像素
+        tolerance = 5.0
+        
+        for edge in all_edges_to_check:
+            checked_count += 1
+            if edge == moved_edge:  # 跳過被移動的邊本身
+                print(f"🚀 跳過被移動的邊本身")
+                continue
+                
+            # 檢查是否引用舊端點
+            deduct_life = False
+            match_type = ""
+            
+            if edge.start_vertex:
+                start_distance = ((edge.start_vertex.x - old_vertex.x)**2 + (edge.start_vertex.y - old_vertex.y)**2) ** 0.5
+                if start_distance < tolerance:
+                    deduct_life = True
+                    match_type = "start_vertex"
+                    print(f"🔍 start_vertex 匹配: 距離 {start_distance:.2f} < {tolerance}")
+                    
+            if edge.end_vertex:
+                end_distance = ((edge.end_vertex.x - old_vertex.x)**2 + (edge.end_vertex.y - old_vertex.y)**2) ** 0.5
+                if end_distance < tolerance:
+                    deduct_life = True
+                    match_type = "end_vertex" if not match_type else "both_vertices"
+                    print(f"🔍 end_vertex 匹配: 距離 {end_distance:.2f} < {tolerance}")
+            
+            site1, site2 = edge.get_bisected_points()
+            if deduct_life:
+                deducted_count += 1
+                edge.life -= 1
+                print(f"🩸 扣血！邊 [{site1.x}, {site1.y}]-[{site2.x}, {site2.y}] 的 {match_type} 匹配，生命值: {edge.life + 1} -> {edge.life}")
+            else:
+                # 顯示未匹配的詳細信息
+                start_info = f"({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f})" if edge.start_vertex else "None"
+                end_info = f"({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})" if edge.end_vertex else "None"
+                start_dist = ((edge.start_vertex.x - old_vertex.x)**2 + (edge.start_vertex.y - old_vertex.y)**2) ** 0.5 if edge.start_vertex else float('inf')
+                end_dist = ((edge.end_vertex.x - old_vertex.x)**2 + (edge.end_vertex.y - old_vertex.y)**2) ** 0.5 if edge.end_vertex else float('inf')
+                print(f"🔴 無匹配: 邊 [{site1.x}, {site1.y}]-[{site2.x}, {site2.y}] start={start_info}(距離{start_dist:.2f}) end={end_info}(距離{end_dist:.2f})")
+        
+        print(f"📊 結果: 檢查了 {checked_count} 條邊，扣血了 {deducted_count} 條邊")
+        print(f"💝 === 生命值更新檢查結束 === 💝\n")
+
     def cleanup_edges_with_truncated_vertices(self, all_edges, truncated_vertices):
-        """清理以被截斷端點為起點或終點的邊
+        """基於邊的生命值系統進行清理
+        
+        新版本：直接根據邊的生命值清理，不依賴截斷端點列表
         
         Args:
             all_edges: 所有邊的列表
-            truncated_vertices: 被截斷的端點列表
+            truncated_vertices: 被截斷的端點列表（已不使用，保留參數兼容性）
         """
-        if not truncated_vertices or not all_edges:
-            return
-            
         edges_to_remove = []
         
-        print(f"檢查 {len(truncated_vertices)} 個被截斷的端點，清理相關邊:")
-        for vertex in truncated_vertices:
-            print(f"  檢查端點: ({vertex.x:.2f}, {vertex.y:.2f})")
-            
-            for edge in all_edges:
-                if edge in edges_to_remove:
-                    continue
-                    
-                # 檢查邊的起點或終點是否與被截斷的端點相同
-                should_remove = False
+        for edge in all_edges:
+            # 跳過 hyperplane 邊（midAB邊）
+            if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane:
+                continue
                 
-                if (edge.start_vertex and 
-                    abs(edge.start_vertex.x - vertex.x) < 5 and 
-                    abs(edge.start_vertex.y - vertex.y) < 5):
-                    should_remove = True
-                    print(f"    邊的start_vertex匹配，標記移除: start({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f}) -> end({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})")
-                
-                if (edge.end_vertex and 
-                    abs(edge.end_vertex.x - vertex.x) < 5 and 
-                    abs(edge.end_vertex.y - vertex.y) < 5):
-                    should_remove = True
-                    print(f"    邊的end_vertex匹配，標記移除: start({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f}) -> end({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})")
-                
-                if should_remove:
-                    edges_to_remove.append(edge)
+            # 檢查邊的生命值
+            if hasattr(edge, 'life') and edge.life <= 0:
+                site1, site2 = edge.get_bisected_points()
+                print(f"💀 邊死亡: [{site1.x}, {site1.y}]-[{site2.x}, {site2.y}] (生命值: {edge.life})")
+                edges_to_remove.append(edge)
+            elif not hasattr(edge, 'life'):
+                # 為舊邊設置默認生命值
+                edge.life = 2
         
         # 移除標記的邊
         for edge in edges_to_remove:
             if edge in all_edges:
                 all_edges.remove(edge)
-                print(f"已移除邊: start({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f}) -> end({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})")
 
     def record_vertex_truncation(self, intersected_edge, is_start_vertex, cross_point, truncated_vertices):
-        """記錄端點截斷並將原始端點加入記錄列表
+        """記錄端點截斷並使用邊生命值系統更新其他邊
         
         Args:
             intersected_edge: 被截斷的邊
             is_start_vertex: True表示截斷start_vertex，False表示截斷end_vertex  
             cross_point: 交點
-            truncated_vertices: 記錄被截斷端點的列表
+            truncated_vertices: 記錄被截斷端點的列表（保留用於其他目的）
         """
+        print(f"\n🔥 *** 開始截斷處理 *** 🔥")
+        intersected_site1, intersected_site2 = intersected_edge.get_bisected_points()
+        print(f"🎯 被截斷的邊: [{intersected_site1.x}, {intersected_site1.y}]-[{intersected_site2.x}, {intersected_site2.y}]")
+        print(f"🎯 截斷類型: {'start_vertex' if is_start_vertex else 'end_vertex'}")
+        print(f"🎯 交點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
+        
         if is_start_vertex:
             # 記錄被截斷的原始start_vertex
             original_vertex = intersected_edge.start_vertex
             if original_vertex:
                 truncated_vertices.append(Point(original_vertex.x, original_vertex.y))
-                print(f"記錄被截斷的原始start_vertex: ({original_vertex.x:.2f}, {original_vertex.y:.2f})")
+                
+                # 使用邊生命值系統：更新其他引用這個端點的邊
+                new_vertex = VoronoiVertex(cross_point.x, cross_point.y)
+                print(f"🔺 start端點移動: ({original_vertex.x:.2f}, {original_vertex.y:.2f}) -> ({new_vertex.x:.2f}, {new_vertex.y:.2f})")
+                self.update_vertex_life_on_move(original_vertex, new_vertex, intersected_edge)
+            else:
+                print(f"⚠️ 警告: 原始start_vertex為None！")
             
             # 設置新的start_vertex
             intersected_edge.start_vertex = VoronoiVertex(cross_point.x, cross_point.y)
-            print(f"  -> start_vertex改設為cross點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
         else:
             # 記錄被截斷的原始end_vertex
             original_vertex = intersected_edge.end_vertex
             if original_vertex:
                 truncated_vertices.append(Point(original_vertex.x, original_vertex.y))
-                print(f"記錄被截斷的原始end_vertex: ({original_vertex.x:.2f}, {original_vertex.y:.2f})")
+                
+                # 使用邊生命值系統：更新其他引用這個端點的邊
+                new_vertex = VoronoiVertex(cross_point.x, cross_point.y)
+                print(f"🔺 end端點移動: ({original_vertex.x:.2f}, {original_vertex.y:.2f}) -> ({new_vertex.x:.2f}, {new_vertex.y:.2f})")
+                self.update_vertex_life_on_move(original_vertex, new_vertex, intersected_edge)
+            else:
+                print(f"⚠️ 警告: 原始end_vertex為None！")
             
             # 設置新的end_vertex
             intersected_edge.end_vertex = VoronoiVertex(cross_point.x, cross_point.y)
-            print(f"  -> end_vertex改設為cross點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
+        
+        print(f"🔥 *** 截斷處理結束 *** 🔥\n")
 
     def truncate_intersected_edge(self, intersected_edge, cross_point, all_points, left_points=None, right_points=None, left_hull=None, right_hull=None, all_edges=None, midAB=None):
         """截斷被碰撞的邊，根據是否為鈍角三角形採用不同邏輯
@@ -2272,10 +2673,21 @@ class VoronoiGUI:
                 self.is_step_mode = False
                 self.draw_voronoi()
                 self.root.title("Voronoi Diagram - Complete")
+                
+                # 列出所有邊的頂點值
+                self.list_all_edge_vertices()
+                
+                # 檢查並移除重複邊
+                print(f"\\n🔍 檢查重複邊...")
+                duplicate_count = self.remove_duplicate_edges()
+                
+                if duplicate_count > 0:
+                    print(f"\\n重新輸出去除重複邊後的邊列表:")
+                    self.list_all_edge_vertices()
 
     
     def show_step(self, step_index):
-        """顯示指定步驟的狀態"""
+        """顯示指定步驟的狀態 - 不修改主要的 self.vd"""
         if step_index < 0 or step_index >= len(self.merge_steps):
             return
         
@@ -2293,27 +2705,32 @@ class VoronoiGUI:
         self.update_step_display()
     
     def show_build_step(self, step, step_index):
-        """顯示構建步驟"""
+        """顯示構建步驟 - 不修改主要的 self.vd"""
         # 清空調試變量
         self.debug_left_hull = []
         self.debug_right_hull = []
         self.debug_merged_hull = []
         self.debug_A = None
         self.debug_B = None
-        self.last_truncated_vertices = []
         
-        # 暫時替換voronoi diagram來顯示該步驟
-        self.current_step_vd = step.voronoi_diagram
+        # 注意：不修改 self.last_truncated_vertices，那是主要執行的狀態
+        
+        # 重要：暫時替換 self.vd 來顯示該步驟，但在完成後需要恢復
+        original_vd = self.vd
+        self.vd = step.voronoi_diagram  # 暫時替換
         
         # 重新繪製
         self.draw_build_step_voronoi(step)
+        
+        # 恢復原始的 vd
+        self.vd = original_vd
         
         # 顯示步驟資訊
         side_text = "左子圖" if step.side == "left" else "右子圖" if step.side == "right" else ""
         self.root.title(f"Voronoi Diagram - {step.description} ({step_index + 1}/{len(self.merge_steps)})")
     
     def show_merge_step(self, step, step_index):
-        """顯示合併步驟"""
+        """顯示合併步驟 - 不修改主要的 self.vd"""
         # 更新調試變量以顯示該步驟的狀態（增加安全檢查）
         self.debug_left_hull = step.left_hull if hasattr(step, 'left_hull') else []
         self.debug_right_hull = step.right_hull if hasattr(step, 'right_hull') else []
@@ -2321,11 +2738,15 @@ class VoronoiGUI:
         self.debug_A = step.debug_A if hasattr(step, 'debug_A') else None
         self.debug_B = step.debug_B if hasattr(step, 'debug_B') else None
         
-        # 暫時替換voronoi diagram來顯示該步驟
-        self.current_step_vd = step.voronoi_diagram
+        # 重要：暫時替換 self.vd 來顯示該步驟，但在完成後需要恢復
+        original_vd = self.vd
+        self.vd = step.voronoi_diagram  # 暫時替換
         
         # 重新繪製
         self.draw_step_voronoi(step)
+        
+        # 恢復原始的 vd
+        self.vd = original_vd
         
         # 顯示步驟資訊
         self.root.title(f"Voronoi Diagram - {step.description} ({step_index + 1}/{len(self.merge_steps)})")
@@ -2562,6 +2983,8 @@ class VoronoiGUI:
         self.previous_run_points = []
         self.run_executed = False
         self.last_truncated_vertices = []
+        
+        print(f"🧹 清空所有點和執行狀態")
         
         # 更新顯示
         self.update_stats_display()

@@ -36,10 +36,16 @@ class VoronoiEdge:
         self.slope = self._calculate_slope()  # 中垂線的斜率
         self.midpoint = self._calculate_midpoint()  # 中垂線經過的中點
         
+        # 邊生命值系統
+        self.life = 2  # 每條邊有2條命（對應兩個端點）
+        
         # 新增：碰撞相關屬性
         self.is_cross = False  # 標記是否被hyperplane碰撞
         self.cross_point = None  # 記錄碰撞點
         self.intersected_by_hyperplane = None  # 記錄被哪條hyperplane碰撞
+        
+        # 外心信息
+        self.circumcenter = None  # 記錄外心位置
     
     # ...existing code...
     
