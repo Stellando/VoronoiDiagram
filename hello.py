@@ -1427,14 +1427,14 @@ class VoronoiGUI:
                 should_remove = False
                 
                 if (edge.start_vertex and 
-                    abs(edge.start_vertex.x - vertex.x) < 0.001 and 
-                    abs(edge.start_vertex.y - vertex.y) < 0.001):
+                    abs(edge.start_vertex.x - vertex.x) < 5 and 
+                    abs(edge.start_vertex.y - vertex.y) < 5):
                     should_remove = True
                     print(f"    邊的start_vertex匹配，標記移除: start({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f}) -> end({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})")
                 
                 if (edge.end_vertex and 
-                    abs(edge.end_vertex.x - vertex.x) < 0.001 and 
-                    abs(edge.end_vertex.y - vertex.y) < 0.001):
+                    abs(edge.end_vertex.x - vertex.x) < 5 and 
+                    abs(edge.end_vertex.y - vertex.y) < 5):
                     should_remove = True
                     print(f"    邊的end_vertex匹配，標記移除: start({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f}) -> end({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})")
                 
