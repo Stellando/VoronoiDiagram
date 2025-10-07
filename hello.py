@@ -2824,14 +2824,49 @@ class VoronoiGUI:
         for x, y in self.points:
             self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="black")
         
+        # 判斷是否為倒數第二步（最後一條 hyperplane 的步驟）
+        is_second_last_step = (hasattr(self, 'merge_steps') and self.merge_steps and
+                              hasattr(self, 'current_step') and 
+                              self.current_step == len(self.merge_steps) - 2)
+        
+        if is_second_last_step:
+            print(f"🌟 正在顯示倒數第二步：最後一條 hyperplane 的步驟")
+        
         # 繪製該步驟的voronoi邊
         for edge in step.voronoi_diagram.edges:
             if edge.start_vertex and edge.end_vertex:  # 確保邊有端點
                 if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane:
-                    # hyperplane用橙色
-                    self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
-                                          edge.end_vertex.x, edge.end_vertex.y, 
-                                          fill="orange", width=2)
+                    if is_second_last_step:
+                        # 倒數第二步：最後一條 hyperplane 畫得非常醒目
+                        # 使用更粗的線條、更鮮艷的顏色和閃爍效果
+                        self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
+                                              edge.end_vertex.x, edge.end_vertex.y, 
+                                              fill="red", width=6)  # 紅色，更粗
+                        # 添加外圍效果
+                        self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
+                                              edge.end_vertex.x, edge.end_vertex.y, 
+                                              fill="yellow", width=3)  # 黃色內芯
+                        # 添加端點標記
+                        self.canvas.create_oval(edge.start_vertex.x-8, edge.start_vertex.y-8, 
+                                              edge.start_vertex.x+8, edge.start_vertex.y+8, 
+                                              fill="red", outline="yellow", width=3)
+                        self.canvas.create_oval(edge.end_vertex.x-8, edge.end_vertex.y-8, 
+                                              edge.end_vertex.x+8, edge.end_vertex.y+8, 
+                                              fill="red", outline="yellow", width=3)
+                        # 添加文字標記（先畫背景框，再畫文字）
+                        mid_x = (edge.start_vertex.x + edge.end_vertex.x) / 2
+                        mid_y = (edge.start_vertex.y + edge.end_vertex.y) / 2
+                        # 畫背景框
+                        self.canvas.create_rectangle(mid_x-80, mid_y-30, mid_x+80, mid_y-10, 
+                                                   fill="yellow", outline="red", width=2)
+                        # 畫文字
+                        self.canvas.create_text(mid_x, mid_y-20, text="最後一條 Hyperplane", 
+                                              fill="red", font=("Arial", 12, "bold"))
+                    else:
+                        # 一般的 hyperplane：橙色
+                        self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
+                                              edge.end_vertex.x, edge.end_vertex.y, 
+                                              fill="orange", width=2)
                 else:
                     # 一般voronoi邊用藍色
                     self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
