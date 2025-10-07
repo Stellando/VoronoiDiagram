@@ -523,9 +523,9 @@ class VoronoiGUI:
             if total_points == 1:
                 return vd  # 單點無需處理
             elif total_points == 2:
-                return self.build_voronoi_two_points(points)
+                return self.build_voronoi_two_points(points, record_steps, step_counter, all_steps)
             elif total_points == 3:
-                return self.build_voronoi_three_points(points)
+                return self.build_voronoi_three_points(points, record_steps, step_counter, all_steps)
         else:
             # Divide：依照點的X座標排序
             sorted_points = sorted(points, key=lambda p: p.x)
@@ -557,7 +557,7 @@ class VoronoiGUI:
             return merged_vd
 
     #兩個點的處理
-    def build_voronoi_two_points(self, points):
+    def build_voronoi_two_points(self, points, record_steps=False, step_counter=None, all_steps=None):
         vd = VoronoiDiagram()
         vd.points = points
         for point in points:
@@ -566,6 +566,18 @@ class VoronoiGUI:
         # 共點則不做任何處理
         if p1.x == p2.x and p1.y == p2.y:
             return vd
+        
+        # 記錄兩兩取中垂線步驟
+        if record_steps and step_counter and all_steps is not None:
+            step_counter[0] += 1
+            temp_vd = VoronoiDiagram()
+            temp_vd.points = points
+            for point in points:
+                temp_vd.point_to_edges[point] = []
+            
+            build_step = BuildStep(step_counter[0], f"兩點取中垂線：({p1.x}, {p1.y}) 和 ({p2.x}, {p2.y})", temp_vd, "", points)
+            all_steps.append(build_step)
+        
         start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(p1, p2)
         edge = VoronoiEdge(p1, p2)
         edge.set_start_vertex(start)
@@ -573,16 +585,35 @@ class VoronoiGUI:
         vd.add_vertex(start)
         vd.add_vertex(end)
         vd.add_edge(edge)
+        
+        # 記錄完成的兩點Voronoi圖
+        if record_steps and step_counter and all_steps is not None:
+            step_counter[0] += 1
+            build_step = BuildStep(step_counter[0], f"兩點Voronoi圖完成：({p1.x}, {p1.y}) 和 ({p2.x}, {p2.y})", vd, "", points)
+            all_steps.append(build_step)
+        
         return vd
 
     #三個點的處理
     #處理鈍角和銳角三角形的情況
-    def build_voronoi_three_points(self, points):
+    def build_voronoi_three_points(self, points, record_steps=False, step_counter=None, all_steps=None):
         vd = VoronoiDiagram()
         vd.points = points
         for point in points:
             vd.point_to_edges[point] = []
         p1, p2, p3 = points[0], points[1], points[2]
+        
+        # 記錄三點取中垂線步驟
+        if record_steps and step_counter and all_steps is not None:
+            step_counter[0] += 1
+            temp_vd = VoronoiDiagram()
+            temp_vd.points = points
+            for point in points:
+                temp_vd.point_to_edges[point] = []
+            
+            build_step = BuildStep(step_counter[0], f"三點取中垂線：({p1.x}, {p1.y}), ({p2.x}, {p2.y}), ({p3.x}, {p3.y})", temp_vd, "", points)
+            all_steps.append(build_step)
+        
         # 判斷三點是否共線
         area = abs((p2.x - p1.x)*(p3.y - p1.y) - (p3.x - p1.x)*(p2.y - p1.y))
         if area == 0:
@@ -593,6 +624,18 @@ class VoronoiGUI:
             # 找出最遠的兩點
             max_d = max(d12, d23, d13)
             pairs = [(p1, p2), (p2, p3), (p3, p1)]
+            
+            # 記錄共線處理步驟
+            if record_steps and step_counter and all_steps is not None:
+                step_counter[0] += 1
+                temp_vd = VoronoiDiagram()
+                temp_vd.points = points
+                for point in points:
+                    temp_vd.point_to_edges[point] = []
+                
+                build_step = BuildStep(step_counter[0], f"三點共線處理：跳過最遠兩點的中垂線", temp_vd, "", points)
+                all_steps.append(build_step)
+            
             for idx, (a, b) in enumerate(pairs):
                 d = (a.x - b.x)**2 + (a.y - b.y)**2
                 if d != max_d:
@@ -603,9 +646,57 @@ class VoronoiGUI:
                     vd.add_vertex(start)
                     vd.add_vertex(end)
                     vd.add_edge(edge)
+            
+            # 記錄共線完成步驟
+            if record_steps and step_counter and all_steps is not None:
+                step_counter[0] += 1
+                build_step = BuildStep(step_counter[0], f"三點共線Voronoi圖完成", vd, "", points)
+                all_steps.append(build_step)
+            
             return vd
+        
         # 不共線，處理三條中垂線
         vertex = self.calculate_circumcenter(p1, p2, p3)
+        
+        # 記錄計算外心步驟
+        if record_steps and step_counter and all_steps is not None:
+            step_counter[0] += 1
+            temp_vd = VoronoiDiagram()
+            temp_vd.points = points
+            for point in points:
+                temp_vd.point_to_edges[point] = []
+            if vertex:
+                temp_vd.add_vertex(vertex)
+            
+            description = f"計算外心：({vertex.x:.2f}, {vertex.y:.2f})" if vertex else "外心計算失敗（可能為鈍角三角形）"
+            build_step = BuildStep(step_counter[0], description, temp_vd, "", points)
+            all_steps.append(build_step)
+        
+        # 記錄原始中垂線步驟
+        if record_steps and step_counter and all_steps is not None:
+            step_counter[0] += 1
+            temp_vd = VoronoiDiagram()
+            temp_vd.points = points
+            for point in points:
+                temp_vd.point_to_edges[point] = []
+            if vertex:
+                temp_vd.add_vertex(vertex)
+            
+            # 添加三條完整的原始中垂線
+            pairs = [(p1, p2), (p2, p3), (p3, p1)]
+            for a, b in pairs:
+                start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(a, b)
+                edge = VoronoiEdge(a, b)
+                edge.set_start_vertex(start)
+                edge.set_end_vertex(end)
+                # 標記為原始中垂線
+                edge.is_original_bisector = True
+                temp_vd.add_vertex(start)
+                temp_vd.add_vertex(end)
+                temp_vd.add_edge(edge)
+            
+            build_step = BuildStep(step_counter[0], f"原始兩兩中垂線：未經截斷的完整中垂線", temp_vd, "", points)
+            all_steps.append(build_step)
         
         # 檢查外心是否存在
         circumcenter_valid = (vertex is not None)
@@ -742,6 +833,14 @@ class VoronoiGUI:
                     vd.add_vertex(new_start)
                     vd.add_vertex(new_end)
                     vd.add_edge(edge)
+        
+        # 記錄三點Voronoi圖完成步驟
+        if record_steps and step_counter and all_steps is not None:
+            step_counter[0] += 1
+            triangle_type = "鈍角" if (cosA < 0 or cosB < 0 or cosC < 0) else "銳角"
+            build_step = BuildStep(step_counter[0], f"三點{triangle_type}三角形Voronoi圖完成", vd, "", points)
+            all_steps.append(build_step)
+        
         return vd
     
 
@@ -1374,7 +1473,7 @@ class VoronoiGUI:
             non_hyperplane_edges = [edge for edge in merged_vd.edges if not (hasattr(edge, 'is_hyperplane') and edge.is_hyperplane)]
             
             print(f"Step {step_counter[0]} 邊的分類統計:")
-            print(f"  - Hyperplane邊(橙色): {len(hyperplane_edges)}")
+            print(f"  - Hyperplane邊(深紅色+黃色): {len(hyperplane_edges)}")
             print(f"  - 非Hyperplane邊(藍色): {len(non_hyperplane_edges)}")
             
             merge_step = MergeStep(
@@ -2793,14 +2892,15 @@ class VoronoiGUI:
         """繪製構建步驟的voronoi圖"""
         self.canvas.delete("all")
         
-        # 只繪製該子圖的點（高亮顯示）
+        # 繪製該子圖的點（高亮顯示）
         for point in step.points:
             if step.side == "left":
                 self.canvas.create_oval(point.x-5, point.y-5, point.x+5, point.y+5, fill="red", outline="darkred", width=2)
             elif step.side == "right":
                 self.canvas.create_oval(point.x-5, point.y-5, point.x+5, point.y+5, fill="green", outline="darkgreen", width=2)
             else:
-                self.canvas.create_oval(point.x-3, point.y-3, point.x+3, point.y+3, fill="black")
+                # 基礎步驟（兩點或三點）：使用特殊顏色
+                self.canvas.create_oval(point.x-6, point.y-6, point.x+6, point.y+6, fill="gold", outline="orange", width=3)
         
         # 繪製其他點（淡化顯示）
         for x, y in self.points:
@@ -2808,13 +2908,88 @@ class VoronoiGUI:
             if point_obj not in step.points:
                 self.canvas.create_oval(x-2, y-2, x+2, y+2, fill="lightgray")
         
+        # 檢查是否為基礎步驟（兩兩取中垂線或計算外心）
+        is_basic_step = ("兩點取中垂線" in step.description or 
+                        "三點取中垂線" in step.description or 
+                        "計算外心" in step.description or
+                        "原始兩兩中垂線" in step.description or
+                        "共線處理" in step.description)
+        
+        if is_basic_step:
+            # 基礎步驟：顯示說明文字
+            if "兩點取中垂線" in step.description:
+                # 畫兩點之間的連線（虛線）
+                p1, p2 = step.points[0], step.points[1]
+                self.canvas.create_line(p1.x, p1.y, p2.x, p2.y, fill="gray", width=2, dash=(5, 5))
+                # 畫中點
+                mid_x, mid_y = (p1.x + p2.x) / 2, (p1.y + p2.y) / 2
+                self.canvas.create_oval(mid_x-4, mid_y-4, mid_x+4, mid_y+4, fill="purple", outline="black", width=2)
+                # 添加說明文字
+                self.canvas.create_text(mid_x, mid_y-20, text="中點", fill="purple", font=("Arial", 10, "bold"))
+            elif "三點取中垂線" in step.description:
+                # 畫三角形（虛線）
+                p1, p2, p3 = step.points[0], step.points[1], step.points[2]
+                self.canvas.create_line(p1.x, p1.y, p2.x, p2.y, fill="gray", width=2, dash=(5, 5))
+                self.canvas.create_line(p2.x, p2.y, p3.x, p3.y, fill="gray", width=2, dash=(5, 5))
+                self.canvas.create_line(p3.x, p3.y, p1.x, p1.y, fill="gray", width=2, dash=(5, 5))
+                # 畫三個中點
+                mid1_x, mid1_y = (p1.x + p2.x) / 2, (p1.y + p2.y) / 2
+                mid2_x, mid2_y = (p2.x + p3.x) / 2, (p2.y + p3.y) / 2
+                mid3_x, mid3_y = (p3.x + p1.x) / 2, (p3.y + p1.y) / 2
+                self.canvas.create_oval(mid1_x-3, mid1_y-3, mid1_x+3, mid1_y+3, fill="purple", outline="black", width=1)
+                self.canvas.create_oval(mid2_x-3, mid2_y-3, mid2_x+3, mid2_y+3, fill="purple", outline="black", width=1)
+                self.canvas.create_oval(mid3_x-3, mid3_y-3, mid3_x+3, mid3_y+3, fill="purple", outline="black", width=1)
+            elif "計算外心" in step.description:
+                # 顯示外心（如果有的話）
+                if step.voronoi_diagram.vertices:
+                    for vertex in step.voronoi_diagram.vertices:
+                        self.canvas.create_oval(vertex.x-8, vertex.y-8, vertex.x+8, vertex.y+8, 
+                                              fill="cyan", outline="blue", width=3)
+                        self.canvas.create_text(vertex.x, vertex.y-20, text="外心", fill="blue", font=("Arial", 12, "bold"))
+            elif "原始兩兩中垂線" in step.description:
+                # 顯示三角形（實線）
+                p1, p2, p3 = step.points[0], step.points[1], step.points[2]
+                self.canvas.create_line(p1.x, p1.y, p2.x, p2.y, fill="darkgray", width=2)
+                self.canvas.create_line(p2.x, p2.y, p3.x, p3.y, fill="darkgray", width=2)
+                self.canvas.create_line(p3.x, p3.y, p1.x, p1.y, fill="darkgray", width=2)
+                
+                # 顯示外心（如果有的話）
+                if step.voronoi_diagram.vertices:
+                    for vertex in step.voronoi_diagram.vertices:
+                        if not hasattr(vertex, 'is_original_bisector'):  # 只顯示外心，不顯示中垂線端點
+                            self.canvas.create_oval(vertex.x-4, vertex.y-4, vertex.x+4, vertex.y+4, 
+                                                  fill="lightcyan", outline="blue", width=1)
+                            self.canvas.create_text(vertex.x, vertex.y-12, text="外心", fill="blue", font=("Arial", 9))
+                
+                # 添加說明文字
+                center_x = (p1.x + p2.x + p3.x) / 3
+                center_y = (p1.y + p2.y + p3.y) / 3
+                self.canvas.create_text(center_x, center_y+40, text="原始中垂線", 
+                                      fill="darkred", font=("Arial", 12, "bold"))
+        
         # 繪製該步驟的voronoi邊
         for edge in step.voronoi_diagram.edges:
             if edge.start_vertex and edge.end_vertex:  # 確保邊有端點
-                # 構建步驟的邊用藍色
-                self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
-                                      edge.end_vertex.x, edge.end_vertex.y, 
-                                      fill="blue", width=2)
+                if is_basic_step:
+                    if "原始兩兩中垂線" in step.description:
+                        # 原始中垂線：只使用黃色細線
+                        clipped = self.clip_line_to_canvas(
+                            edge.start_vertex.x, edge.start_vertex.y,
+                            edge.end_vertex.x, edge.end_vertex.y
+                        )
+                        if clipped:
+                            x1, y1, x2, y2 = clipped
+                            self.canvas.create_line(x1, y1, x2, y2, fill="orange", width=2)
+                    else:
+                        # 其他基礎步驟的邊用洋紅色
+                        self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
+                                              edge.end_vertex.x, edge.end_vertex.y, 
+                                              fill="magenta", width=3)
+                else:
+                    # 構建步驟的邊用藍色
+                    self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
+                                          edge.end_vertex.x, edge.end_vertex.y, 
+                                          fill="blue", width=2)
     
     def draw_step_voronoi(self, step):
         """繪製特定步驟的voronoi圖"""
@@ -2863,10 +3038,15 @@ class VoronoiGUI:
                         self.canvas.create_text(mid_x, mid_y-20, text="最後一條 Hyperplane", 
                                               fill="red", font=("Arial", 12, "bold"))
                     else:
-                        # 一般的 hyperplane：橙色
+                        # 一般的 hyperplane：背景深紅色粗線 + 前景黃色細線
+                        # 背景：深紅色粗線（線寬 5）
                         self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
                                               edge.end_vertex.x, edge.end_vertex.y, 
-                                              fill="orange", width=2)
+                                              fill="darkred", width=5)
+                        # 前景：黃色細線（線寬 3）
+                        self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
+                                              edge.end_vertex.x, edge.end_vertex.y, 
+                                              fill="yellow", width=3)
                 else:
                     # 一般voronoi邊用藍色
                     self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
