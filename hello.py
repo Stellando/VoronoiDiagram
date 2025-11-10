@@ -3,30 +3,878 @@ from tkinter import filedialog
 from tkinter import messagebox
 from datastructer import* 
 import copy
+import math
 
-# 儲存merge步驟狀態的類
-class MergeStep:
-    def __init__(self, step_number, description, voronoi_diagram, 
-                 left_hull=None, right_hull=None, merged_hull=None, 
-                 hyperplanes=None, non_hyperplanes=None, debug_A=None, debug_B=None):
-        self.step_number = step_number
-        self.description = description
-        self.voronoi_diagram = copy.deepcopy(voronoi_diagram)  # 深拷貝VD狀態
-        self.left_hull = copy.deepcopy(left_hull) if left_hull else []
-        self.right_hull = copy.deepcopy(right_hull) if right_hull else []
-        self.merged_hull = copy.deepcopy(merged_hull) if merged_hull else []
-        self.hyperplanes = copy.deepcopy(hyperplanes) if hyperplanes else []  # 橙色邊（merge產生的）
-        self.non_hyperplanes = copy.deepcopy(non_hyperplanes) if non_hyperplanes else []  # 藍色邊（原有的）
-        self.debug_A = copy.deepcopy(debug_A) if debug_A else None
-        self.debug_B = copy.deepcopy(debug_B) if debug_B else None
+# 畫布和計算範圍常數
+CANVAS_WIDTH = 600
+CANVAS_HEIGHT = 600
+CALC_MARGIN = 1000  # 計算範圍延伸
+CALC_MIN = -CALC_MARGIN
+CALC_MAX_X = CANVAS_WIDTH + CALC_MARGIN
+CALC_MAX_Y = CANVAS_HEIGHT + CALC_MARGIN
 
-class BuildStep:
-    def __init__(self, step_number, description, voronoi_diagram, side="", points=None):
-        self.step_number = step_number
-        self.description = description
-        self.voronoi_diagram = copy.deepcopy(voronoi_diagram)  # 深拷貝VD狀態
-        self.side = side  # "left" 或 "right" 或 ""
-        self.points = copy.deepcopy(points) if points else []
+
+# 幾何計算函數
+def calculate_circumcenter(p1, p2, p3):
+    """
+    計算三角形外心
+    返回 (cx, cy) 或 None（如果三點共線）
+    """
+    x1, y1 = p1.x, p1.y
+    x2, y2 = p2.x, p2.y
+    x3, y3 = p3.x, p3.y
+    
+    # 計算 D = 2(x1(y2-y3) + x2(y3-y1) + x3(y1-y2))
+    D = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+    
+    # 如果 D 接近 0，表示三點共線
+    if abs(D) < 1e-9:
+        return None
+    
+    # 計算外心座標
+    ux = ((x1*x1 + y1*y1) * (y2 - y3) + 
+          (x2*x2 + y2*y2) * (y3 - y1) + 
+          (x3*x3 + y3*y3) * (y1 - y2)) / D
+    
+    uy = ((x1*x1 + y1*y1) * (x3 - x2) + 
+          (x2*x2 + y2*y2) * (x1 - x3) + 
+          (x3*x3 + y3*y3) * (x2 - x1)) / D
+    
+    return (ux, uy)
+
+
+def are_collinear(p1, p2, p3, tolerance=1e-6):
+    """判斷三點是否共線"""
+    # 使用叉積判斷
+    x1, y1 = p1.x, p1.y
+    x2, y2 = p2.x, p2.y
+    x3, y3 = p3.x, p3.y
+    
+    # 計算向量 (p1->p2) 和 (p1->p3) 的叉積
+    cross = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1)
+    
+    return abs(cross) < tolerance
+
+
+def is_obtuse_triangle(p1, p2, p3):
+    """
+    判斷三角形是否為鈍角三角形
+    返回 True 如果是鈍角三角形
+    """
+    # 計算三邊長度的平方
+    def dist_squared(a, b):
+        return (a.x - b.x)**2 + (a.y - b.y)**2
+    
+    a2 = dist_squared(p2, p3)  # BC^2
+    b2 = dist_squared(p1, p3)  # AC^2
+    c2 = dist_squared(p1, p2)  # AB^2
+    
+    # 檢查任一角是否為鈍角
+    # 角A為鈍角: a^2 > b^2 + c^2
+    if a2 > b2 + c2 + 1e-9:
+        return True
+    # 角B為鈍角: b^2 > a^2 + c^2
+    if b2 > a2 + c2 + 1e-9:
+        return True
+    # 角C為鈍角: c^2 > a^2 + b^2
+    if c2 > a2 + b2 + 1e-9:
+        return True
+    
+    return False
+
+
+def find_obtuse_vertex(p1, p2, p3):
+    """
+    找出鈍角三角形的鈍角頂點和對邊
+    返回: (obtuse_vertex, opposite_edge_p1, opposite_edge_p2) 或 None
+    
+    例如：如果 A 是鈍角，返回 (A, B, C) - BC 是對邊
+    """
+    def dist_squared(a, b):
+        return (a.x - b.x)**2 + (a.y - b.y)**2
+    
+    a2 = dist_squared(p2, p3)  # BC^2 (A的對邊)
+    b2 = dist_squared(p1, p3)  # AC^2 (B的對邊)
+    c2 = dist_squared(p1, p2)  # AB^2 (C的對邊)
+    
+    # 角A為鈍角: a^2 > b^2 + c^2
+    if a2 > b2 + c2 + 1e-9:
+        return (p1, p2, p3)  # A是鈍角，BC是對邊
+    
+    # 角B為鈍角: b^2 > a^2 + c^2
+    if b2 > a2 + c2 + 1e-9:
+        return (p2, p1, p3)  # B是鈍角，AC是對邊
+    
+    # 角C為鈍角: c^2 > a^2 + b^2
+    if c2 > a2 + b2 + 1e-9:
+        return (p3, p1, p2)  # C是鈍角，AB是對邊
+    
+    return None
+
+
+def is_right_triangle(p1, p2, p3):
+    """
+    判斷三角形是否為直角三角形
+    返回 True 如果是直角三角形（任一角為 90 度）
+    """
+    def dist_squared(a, b):
+        return (a.x - b.x)**2 + (a.y - b.y)**2
+    
+    a2 = dist_squared(p2, p3)  # BC^2
+    b2 = dist_squared(p1, p3)  # AC^2
+    c2 = dist_squared(p1, p2)  # AB^2
+    
+    # 使用畢氏定理檢查：a² = b² + c²（容差 1e-6）
+    epsilon = 1e-6
+    
+    # 檢查角A是否為直角: a² = b² + c²
+    if abs(a2 - (b2 + c2)) < epsilon:
+        return True
+    # 檢查角B是否為直角: b² = a² + c²
+    if abs(b2 - (a2 + c2)) < epsilon:
+        return True
+    # 檢查角C是否為直角: c² = a² + b²
+    if abs(c2 - (a2 + b2)) < epsilon:
+        return True
+    
+    return False
+
+
+def find_right_vertex(p1, p2, p3):
+    """
+    找出直角三角形的直角頂點和對邊
+    返回: (right_vertex, opposite_edge_p1, opposite_edge_p2) 或 None
+    
+    例如：如果 A 是直角，返回 (A, B, C) - BC 是對邊
+    """
+    def dist_squared(a, b):
+        return (a.x - b.x)**2 + (a.y - b.y)**2
+    
+    a2 = dist_squared(p2, p3)  # BC^2 (A的對邊)
+    b2 = dist_squared(p1, p3)  # AC^2 (B的對邊)
+    c2 = dist_squared(p1, p2)  # AB^2 (C的對邊)
+    
+    epsilon = 1e-6
+    
+    # 角A為直角: a² = b² + c²
+    if abs(a2 - (b2 + c2)) < epsilon:
+        return (p1, p2, p3)  # A是直角，BC是對邊
+    
+    # 角B為直角: b² = a² + c²
+    if abs(b2 - (a2 + c2)) < epsilon:
+        return (p2, p1, p3)  # B是直角，AC是對邊
+    
+    # 角C為直角: c² = a² + b²
+    if abs(c2 - (a2 + b2)) < epsilon:
+        return (p3, p1, p2)  # C是直角，AB是對邊
+    
+    return None
+
+
+def find_farthest_two_points(p1, p2, p3):
+    """
+    找出三點中距離最遠的兩個點
+    返回: (point1, point2, point3) 其中 point1 和 point2 距離最遠
+    """
+    def dist_squared(a, b):
+        return (a.x - b.x)**2 + (a.y - b.y)**2
+    
+    d12 = dist_squared(p1, p2)
+    d23 = dist_squared(p2, p3)
+    d13 = dist_squared(p1, p3)
+    
+    if d12 >= d23 and d12 >= d13:
+        return (p1, p2, p3)
+    elif d23 >= d12 and d23 >= d13:
+        return (p2, p3, p1)
+    else:
+        return (p1, p3, p2)
+
+
+def compute_convex_hull(points):
+    """
+    計算點集的凸包（Andrew's Monotone Chain 演算法）
+    
+    參數:
+        points: List[Point] 或 List[VoronoiSite] - 點的列表
+    
+    返回:
+        ConvexHull - 包含凸包頂點（逆時針順序）和邊
+    """
+    if not points:
+        return ConvexHull(points=[], edges=[])
+    
+    if len(points) == 1:
+        return ConvexHull(points=list(points), edges=[])
+    
+    if len(points) == 2:
+        p1, p2 = points[0], points[1]
+        return ConvexHull(points=list(points), edges=[(p1, p2)])
+    
+    # 將點按照 (x, y) 排序
+    sorted_points = sorted(points, key=lambda p: (p.x, p.y))
+    
+    def cross_product(o, a, b):
+        """計算叉積 (a-o) × (b-o)"""
+        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    
+    # 構建下凸包
+    lower = []
+    for p in sorted_points:
+        while len(lower) >= 2 and cross_product(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    
+    # 構建上凸包
+    upper = []
+    for p in reversed(sorted_points):
+        while len(upper) >= 2 and cross_product(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    
+    # 移除重複的首尾點
+    hull_points = lower[:-1] + upper[:-1]
+    
+    # 如果只有兩個點，特殊處理
+    if len(hull_points) < 3:
+        hull_points = sorted_points
+    
+    # 構建邊
+    edges = []
+    for i in range(len(hull_points)):
+        p1 = hull_points[i]
+        p2 = hull_points[(i + 1) % len(hull_points)]
+        edges.append((p1, p2))
+    
+    return ConvexHull(points=hull_points, edges=edges)
+
+
+def compute_hyperplane_points(left_sites, right_sites, merged_hull):
+    """
+    計算 hyperplane 的兩個端點
+    
+    參數:
+        left_sites: 左半邊的站點列表
+        right_sites: 右半邊的站點列表
+        merged_hull: ConvexHull - 合併後的凸包
+    
+    返回:
+        (point1, point2) - hyperplane 的兩個端點，如果無法計算則返回 None
+    """
+    if not merged_hull or not merged_hull.points or len(merged_hull.points) < 2:
+        return None
+    
+    # 計算左右分界線的 X 座標（左側最右邊和右側最左邊的中點）
+    left_max_x = max(s.x for s in left_sites)
+    right_min_x = min(s.x for s in right_sites)
+    dividing_line_x = (left_max_x + right_min_x) / 2.0
+    
+    print(f"    左側最大X: {left_max_x:.1f}, 右側最小X: {right_min_x:.1f}, 分界線X: {dividing_line_x:.1f}")
+    
+    # 計算凸包點的 Y 座標中位數（注意：Y 座標倒置，小值在上）
+    hull_points = merged_hull.points
+    y_values = sorted([p.y for p in hull_points])
+    n = len(y_values)
+    
+    if n % 2 == 0:
+        y_median = (y_values[n//2 - 1] + y_values[n//2]) / 2.0
+    else:
+        y_median = y_values[n//2]
+    
+    print(f"    凸包點數: {len(hull_points)}, Y中位數: {y_median:.1f}")
+    
+    # 篩選上半部的點（Y < 中位數，因為 Y 座標倒置）
+    upper_hull_points = [p for p in hull_points if p.y < y_median]
+    
+    # 如果上半部點太少，放寬條件使用 Y <= 中位數
+    if len(upper_hull_points) < 2:
+        upper_hull_points = [p for p in hull_points if p.y <= y_median]
+    
+    if len(upper_hull_points) < 2:
+        print(f"    警告：上半部點數不足 ({len(upper_hull_points)})")
+        return None
+    
+    print(f"    上半部點數: {len(upper_hull_points)}")
+    
+    # 將上半部的點分為左側和右側
+    left_upper = [p for p in upper_hull_points if p.x < dividing_line_x]
+    right_upper = [p for p in upper_hull_points if p.x > dividing_line_x]
+    
+    print(f"    左側上半部: {len(left_upper)} 點, 右側上半部: {len(right_upper)} 點")
+    
+    # 如果左側或右側上半部為空，使用所有凸包點作為備選
+    if not left_upper or not right_upper:
+        print(f"    警告：左側或右側上半部為空，改用所有凸包點")
+        left_candidates = [p for p in hull_points if p.x < dividing_line_x]
+        right_candidates = [p for p in hull_points if p.x > dividing_line_x]
+        
+        if not left_candidates or not right_candidates:
+            print(f"    錯誤：無法找到左側或右側候選點")
+            return None
+        
+        # 找到左側離分界線最近的點
+        left_point = min(left_candidates, key=lambda p: abs(p.x - dividing_line_x))
+        
+        # 找到右側離分界線最近的點
+        right_point = min(right_candidates, key=lambda p: abs(p.x - dividing_line_x))
+    else:
+        # 找到左側離分界線最近的點
+        left_point = min(left_upper, key=lambda p: abs(p.x - dividing_line_x))
+        
+        # 找到右側離分界線最近的點
+        right_point = min(right_upper, key=lambda p: abs(p.x - dividing_line_x))
+    
+    print(f"    選擇的點: 左 ({left_point.x:.1f}, {left_point.y:.1f}), 右 ({right_point.x:.1f}, {right_point.y:.1f})")
+    
+    return (left_point, right_point)
+
+
+def line_intersection(p1, p2, p3, p4):
+    """
+    計算兩條線段的交點
+    線段1: p1 到 p2
+    線段2: p3 到 p4
+    
+    返回: (x, y, t1, t2) 或 None
+    其中 t1 是交點在線段1上的參數 (0-1 表示在線段內)
+         t2 是交點在線段2上的參數 (0-1 表示在線段內)
+    """
+    x1, y1 = p1.x, p1.y
+    x2, y2 = p2.x, p2.y
+    x3, y3 = p3.x, p3.y
+    x4, y4 = p4.x, p4.y
+    
+    # 計算方向向量
+    dx1 = x2 - x1
+    dy1 = y2 - y1
+    dx2 = x4 - x3
+    dy2 = y4 - y3
+    
+    # 計算行列式
+    det = dx1 * dy2 - dy1 * dx2
+    
+    # 平行或重合
+    if abs(det) < 1e-9:
+        return None
+    
+    # 計算參數 t1 和 t2
+    t1 = ((x3 - x1) * dy2 - (y3 - y1) * dx2) / det
+    t2 = ((x3 - x1) * dy1 - (y3 - y1) * dx1) / det
+    
+    # 計算交點
+    x = x1 + t1 * dx1
+    y = y1 + t1 * dy1
+    
+    return (x, y, t1, t2)
+
+
+def truncate_hyperplane(hyperplane_start, hyperplane_end, all_edges, left_sites, right_sites, depth=0):
+    """
+    截斷 hyperplane：找到由上往下第一個交點，並截斷所有在該點重疊的中垂線
+    
+    參數:
+        hyperplane_start: hyperplane 的起始點（應為 Y 較小的點）
+        hyperplane_end: hyperplane 的結束點（應為 Y 較大的點）
+        all_edges: 所有現有的邊（不包括 hyperplane 自己）
+        left_sites: 左半邊的站點列表
+        right_sites: 右半邊的站點列表
+        depth: 遞迴深度（用於輸出）
+    
+    返回:
+        (new_end_point, intersected_edges_list, all_intersected_sites) 或 (None, None, None)
+        new_end_point: 新的結束點（交點）
+        intersected_edges_list: 所有相交的邊的列表
+        all_intersected_sites: 所有涉及的站點集合（不重複）
+    """
+    # 確保 start 的 Y 小於 end 的 Y（start 在上方）
+    if hyperplane_start.y > hyperplane_end.y:
+        hyperplane_start, hyperplane_end = hyperplane_end, hyperplane_start
+        print(f"{'  '*depth}    [截斷] 對調起始點和結束點")
+    
+    print(f"{'  '*depth}    [截斷] Hyperplane: ({hyperplane_start.x:.1f}, {hyperplane_start.y:.1f}) -> ({hyperplane_end.x:.1f}, {hyperplane_end.y:.1f})")
+    
+    # 容差：±1 像素
+    INTERSECTION_TOLERANCE = 1.0
+    
+    closest_intersection = None
+    closest_t = float('inf')
+    all_intersections = []  # 存儲所有交點資訊：(x, y, t1, t2, edge)
+    
+    # 遍歷所有邊，找到所有交點
+    for edge in all_edges:
+        if not edge.start or not edge.end:
+            continue
+        
+        # 計算交點
+        result = line_intersection(hyperplane_start, hyperplane_end, edge.start, edge.end)
+        
+        if result:
+            x, y, t1, t2 = result
+            
+            # t1 是 hyperplane 上的參數，t2 是邊上的參數
+            # 我們要找 t1 > 0（在起始點之後）且 t1 < 1（在結束點之前）
+            # 同時 t2 應該在 [0, 1] 之間（在邊的範圍內）
+            if 0 < t1 < 1 and 0 <= t2 <= 1:
+                all_intersections.append((x, y, t1, t2, edge))
+                print(f"{'  '*depth}      找到交點: ({x:.1f}, {y:.1f}), t1={t1:.3f}, 邊: ({edge.start.x:.1f},{edge.start.y:.1f})-({edge.end.x:.1f},{edge.end.y:.1f})")
+                
+                # 記錄最近的交點
+                if t1 < closest_t:
+                    closest_t = t1
+                    closest_intersection = (x, y)
+    
+    if closest_intersection:
+        x, y = closest_intersection
+        
+        # 找出所有在容差範圍內的重疊交點
+        overlapping_intersections = []
+        for ix, iy, t1, t2, edge in all_intersections:
+            # 計算與最近交點的距離
+            distance = math.sqrt((ix - x)**2 + (iy - y)**2)
+            if distance <= INTERSECTION_TOLERANCE:
+                overlapping_intersections.append((ix, iy, t1, t2, edge))
+        
+        print(f"{'  '*depth}    [截斷] 最近交點: ({x:.1f}, {y:.1f})")
+        print(f"{'  '*depth}    [截斷] 在容差 {INTERSECTION_TOLERANCE} 內找到 {len(overlapping_intersections)} 條重疊的邊")
+        
+        # 收集所有涉及的站點（不重複）
+        all_sites = set()
+        intersected_edges = []
+        
+        for ix, iy, t1, t2, edge in overlapping_intersections:
+            site1 = edge.site1
+            site2 = edge.site2
+            all_sites.add(site1)
+            all_sites.add(site2)
+            intersected_edges.append(edge)
+            print(f"{'  '*depth}      邊: ({edge.start.x:.1f},{edge.start.y:.1f})-({edge.end.x:.1f},{edge.end.y:.1f}), 由點 ({site1.x:.1f},{site1.y:.1f}) 和 ({site2.x:.1f},{site2.y:.1f}) 產生")
+        
+        # 創建新的交點頂點（交匯點 - Junction Vertex）
+        from datastructer import VoronoiVertex, Point
+        intersection_vertex = VoronoiVertex(x, y, sites=list(all_sites))
+        intersection_vertex.is_junction = True  # 標記為交匯點
+        print(f"{'  '*depth}    [截斷] 創建交匯點 at ({x:.1f}, {y:.1f})")
+        
+        # 截斷所有重疊的邊
+        for edge in intersected_edges:
+            site1 = edge.site1
+            site2 = edge.site2
+            
+            # 判斷被碰到的邊屬於左半邊還是右半邊
+            site1_in_left = site1 in left_sites
+            site2_in_left = site2 in left_sites
+            
+            if site1_in_left and site2_in_left:
+                # 兩個點都在左側，屬於左半邊
+                print(f"{'  '*depth}    [截斷] 邊 ({site1.x:.1f},{site1.y:.1f})-({site2.x:.1f},{site2.y:.1f}) 屬於左半邊，將 X 較大的端點改為交點")
+                # 將 X 較大的端點改為交點
+                if edge.start.x > edge.end.x:
+                    edge.start = intersection_vertex
+                    print(f"{'  '*depth}    [截斷] 修改起始點為 ({x:.1f}, {y:.1f})")
+                else:
+                    edge.end = intersection_vertex
+                    print(f"{'  '*depth}    [截斷] 修改結束點為 ({x:.1f}, {y:.1f})")
+            elif not site1_in_left and not site2_in_left:
+                # 兩個點都在右側，屬於右半邊
+                print(f"{'  '*depth}    [截斷] 邊 ({site1.x:.1f},{site1.y:.1f})-({site2.x:.1f},{site2.y:.1f}) 屬於右半邊，將 X 較小的端點改為交點")
+                # 將 X 較小的端點改為交點
+                if edge.start.x < edge.end.x:
+                    edge.start = intersection_vertex
+                    print(f"{'  '*depth}    [截斷] 修改起始點為 ({x:.1f}, {y:.1f})")
+                else:
+                    edge.end = intersection_vertex
+                    print(f"{'  '*depth}    [截斷] 修改結束點為 ({x:.1f}, {y:.1f})")
+            else:
+                # 跨越左右邊界的邊（一個點在左，一個在右）
+                print(f"{'  '*depth}    [截斷] 警告：邊 ({site1.x:.1f},{site1.y:.1f})-({site2.x:.1f},{site2.y:.1f}) 跨越左右邊界")
+        
+        # 創建交點的 Point 物件（用於返回）
+        intersection_point = Point(x, y)
+        
+        return (intersection_point, intersected_edges, list(all_sites))
+    else:
+        print(f"{'  '*depth}    [截斷] 未找到交點")
+        return (None, None, None)
+
+
+def continue_hyperplane_from_intersection(vd, initial_start, initial_generating_sites, left_sites, right_sites, depth=0):
+    """
+    從初始 hyperplane 的碰撞點開始，繼續繪製 hyperplane 直到離開畫布
+    
+    參數:
+        vd: VoronoiDiagram 實例
+        initial_start: 初始 hyperplane 的碰撞點，作為下一段的起始點 (Point)
+        initial_generating_sites: 產生下一段 hyperplane 的兩個站點 (tuple of two sites)
+        left_sites: 左半邊的站點列表
+        right_sites: 右半邊的站點列表
+        depth: 遞迴深度（用於輸出）
+    
+    返回:
+        所有創建的 hyperplane 邊的列表
+    """
+    from datastructer import Point, VoronoiVertex
+    
+    # 最大迭代次數保護（可在此處修改以調整迭代上限）
+    MAX_ITERATIONS = 100
+    
+    print(f"{'  '*depth}  [繼續 Hyperplane] 開始從碰撞點延伸 hyperplane")
+    
+    all_hyperplane_edges = []
+    current_start = initial_start
+    
+    # 記錄當前 hyperplane 是由哪兩個站點產生的
+    current_generating_sites = initial_generating_sites
+    
+    # 首先計算初始的延伸方向
+    site_a, site_c = current_generating_sites
+    
+    # 計算中點
+    mid_x = (site_a.x + site_c.x) / 2.0
+    mid_y = (site_a.y + site_c.y) / 2.0
+    
+    # 計算中垂線的方向向量（垂直於 A-C 連線）
+    dx = site_c.x - site_a.x
+    dy = site_c.y - site_a.y
+    
+    # 垂直方向（旋轉90度）
+    direction_x = -dy
+    direction_y = dx
+    
+    # 正規化方向向量
+    length = math.sqrt(direction_x**2 + direction_y**2)
+    if length > 1e-9:
+        direction_x /= length
+        direction_y /= length
+    
+    # 確保方向向量指向下方（direction_y > 0）
+    if direction_y < 0:
+        direction_x = -direction_x
+        direction_y = -direction_y
+    
+    print(f"{'  '*depth}  [繼續 Hyperplane] 初始產生點: ({site_a.x:.1f}, {site_a.y:.1f}) 和 ({site_c.x:.1f}, {site_c.y:.1f})")
+    print(f"{'  '*depth}  [繼續 Hyperplane] 中垂線方向: ({direction_x:.3f}, {direction_y:.3f})")
+    
+    # 從碰撞點開始，延伸一大段距離
+    extension_length = 2000
+    current_end_x = current_start.x + direction_x * extension_length
+    current_end_y = current_start.y + direction_y * extension_length
+    current_end = Point(current_end_x, current_end_y)
+    
+    iteration = 0
+    
+    while iteration < MAX_ITERATIONS:
+        iteration += 1
+        print(f"{'  '*depth}  [繼續 Hyperplane] 迭代 {iteration}/{MAX_ITERATIONS}")
+        
+        # 收集當前合併層級的邊（只包含左半邊和右半邊的邊，包括 hyperplane）
+        current_level_edges = []
+        for e in vd.edges:
+            # 檢查是否屬於左半邊
+            if e.site1 in left_sites and e.site2 in left_sites:
+                current_level_edges.append(e)
+            # 檢查是否屬於右半邊
+            elif e.site1 in right_sites and e.site2 in right_sites:
+                current_level_edges.append(e)
+            # 檢查是否為跨越左右的 hyperplane（之前更深層或本層產生的）
+            elif e.is_hyperplane and ((e.site1 in left_sites and e.site2 in right_sites) or 
+                                       (e.site1 in right_sites and e.site2 in left_sites)):
+                current_level_edges.append(e)
+        
+        print(f"{'  '*depth}  [繼續 Hyperplane] 當前層級共有 {len(current_level_edges)} 條邊")
+        
+        # 執行截斷，找到下一個碰撞點
+        new_end, intersected_edges, all_intersected_sites = truncate_hyperplane(
+            current_start, current_end, current_level_edges, left_sites, right_sites, depth + 1
+        )
+        
+        # 檢查是否找到碰撞點
+        if not new_end:
+            print(f"{'  '*depth}  [繼續 Hyperplane] 未找到碰撞點，繪製最後一段延伸到邊界")
+            # 沒有碰撞點，使用原本計算的終點（延伸到邊界）
+            new_end = current_end
+            is_final_segment = True
+        elif new_end.y > CANVAS_HEIGHT:
+            print(f"{'  '*depth}  [繼續 Hyperplane] 碰撞點 Y={new_end.y:.1f} > {CANVAS_HEIGHT}，離開畫布，繪製最後一段")
+            # 碰撞點在畫布外，仍然繪製這一段
+            is_final_segment = True
+        else:
+            # 碰撞點在畫布內
+            print(f"{'  '*depth}  [繼續 Hyperplane] 碰撞點在畫布內: ({new_end.x:.1f}, {new_end.y:.1f})")
+            is_final_segment = False
+        
+        # 創建這一段的端點頂點
+        start_vertex = vd.create_vertex(current_start.x, current_start.y, sites=list(current_generating_sites))
+        end_vertex = vd.create_vertex(new_end.x, new_end.y, sites=list(current_generating_sites))
+        
+        # 創建 hyperplane 邊
+        site_a, site_c = current_generating_sites
+        edge = vd.create_edge(site_a, site_c)
+        edge.start = start_vertex
+        edge.end = end_vertex
+        edge.is_hyperplane = True
+        
+        all_hyperplane_edges.append(edge)
+        print(f"{'  '*depth}  [繼續 Hyperplane] 創建 hyperplane 段: ({current_start.x:.1f}, {current_start.y:.1f}) -> ({new_end.x:.1f}, {new_end.y:.1f})")
+        
+        # 如果是最後一段，停止延伸
+        if is_final_segment:
+            print(f"{'  '*depth}  [繼續 Hyperplane] 已繪製最後一段，停止延伸")
+            break
+        
+        # 獲取所有被碰撞邊涉及的站點
+        if not all_intersected_sites:
+            print(f"{'  '*depth}  [繼續 Hyperplane] 錯誤：未能獲取被碰撞邊的站點，停止延伸")
+            break
+        
+        print(f"{'  '*depth}  [繼續 Hyperplane] 碰撞涉及 {len(all_intersected_sites)} 個站點")
+        for site in all_intersected_sites:
+            print(f"{'  '*depth}    站點: ({site.x:.1f}, {site.y:.1f})")
+        
+        # 確定下一段 hyperplane 的產生點
+        # 規則：從所有涉及的站點中，排除當前 hyperplane 的產生點
+        prev_site1, prev_site2 = current_generating_sites
+        
+        # 找出不是當前產生點的站點
+        remaining_sites = [s for s in all_intersected_sites if s != prev_site1 and s != prev_site2]
+        
+        print(f"{'  '*depth}  [繼續 Hyperplane] 當前產生點: ({prev_site1.x:.1f},{prev_site1.y:.1f}) 和 ({prev_site2.x:.1f},{prev_site2.y:.1f})")
+        print(f"{'  '*depth}  [繼續 Hyperplane] 排除後剩餘 {len(remaining_sites)} 個站點")
+        
+        if len(remaining_sites) == 0:
+            print(f"{'  '*depth}  [繼續 Hyperplane] 錯誤：沒有剩餘站點可以產生下一段，停止延伸")
+            break
+        elif len(remaining_sites) == 1:
+            # 只有一個新站點，找出是哪個舊站點被重用
+            new_site = remaining_sites[0]
+            
+            # 找出共同站點（在 all_intersected_sites 和 current_generating_sites 中都出現）
+            common_sites = [s for s in all_intersected_sites if s == prev_site1 or s == prev_site2]
+            
+            if len(common_sites) == 1:
+                common_site = common_sites[0]
+                # 找出另一個舊站點
+                other_prev_site = prev_site1 if common_site == prev_site2 else prev_site2
+                
+                print(f"{'  '*depth}  [繼續 Hyperplane] 共同站點: ({common_site.x:.1f}, {common_site.y:.1f})")
+                print(f"{'  '*depth}  [繼續 Hyperplane] 新站點: ({new_site.x:.1f}, {new_site.y:.1f})")
+                print(f"{'  '*depth}  [繼續 Hyperplane] 保留站點: ({other_prev_site.x:.1f}, {other_prev_site.y:.1f})")
+                print(f"{'  '*depth}  [繼續 Hyperplane] 下一段將由 ({other_prev_site.x:.1f}, {other_prev_site.y:.1f}) 和 ({new_site.x:.1f}, {new_site.y:.1f}) 產生")
+                
+                current_generating_sites = (other_prev_site, new_site)
+            else:
+                print(f"{'  '*depth}  [繼續 Hyperplane] 錯誤：找到 {len(common_sites)} 個共同站點（應為1個），停止延伸")
+                break
+                
+        elif len(remaining_sites) == 2:
+            # 有兩個新站點，這是重疊中垂線的情況
+            site1 = remaining_sites[0]
+            site2 = remaining_sites[1]
+            
+            print(f"{'  '*depth}  [繼續 Hyperplane] 檢測到重疊中垂線！")
+            print(f"{'  '*depth}  [繼續 Hyperplane] 兩個新站點: ({site1.x:.1f}, {site1.y:.1f}) 和 ({site2.x:.1f}, {site2.y:.1f})")
+            print(f"{'  '*depth}  [繼續 Hyperplane] 下一段將由這兩個站點產生")
+            
+            current_generating_sites = (site1, site2)
+            
+        else:
+            # 有超過2個新站點，無法自動處理
+            from tkinter import messagebox
+            messagebox.showwarning("警告", 
+                f"Hyperplane 碰撞到 {len(remaining_sites)} 個新站點，無法自動決定下一段的產生點。\n"
+                f"涉及站點數：{len(all_intersected_sites)}\n"
+                f"當前產生點：2個\n"
+                f"新站點：{len(remaining_sites)}個")
+            print(f"{'  '*depth}  [繼續 Hyperplane] 警告：有 {len(remaining_sites)} 個新站點，無法自動處理，停止延伸")
+            break
+        
+        # 計算新的中垂線（使用更新後的 current_generating_sites）
+        site_a, site_c = current_generating_sites
+        
+        # 計算中點
+        mid_x = (site_a.x + site_c.x) / 2.0
+        mid_y = (site_a.y + site_c.y) / 2.0
+        
+        # 計算中垂線的方向向量（垂直於 A-C 連線）
+        dx = site_c.x - site_a.x
+        dy = site_c.y - site_a.y
+        
+        # 垂直方向（旋轉90度）
+        direction_x = -dy
+        direction_y = dx
+        
+        # 正規化方向向量
+        length = math.sqrt(direction_x**2 + direction_y**2)
+        if length > 1e-9:
+            direction_x /= length
+            direction_y /= length
+        
+        # 從碰撞點開始，往下延伸（Y 增加方向）
+        # 確保方向向量指向下方（direction_y > 0）
+        if direction_y < 0:
+            direction_x = -direction_x
+            direction_y = -direction_y
+        
+        print(f"{'  '*depth}  [繼續 Hyperplane] 中垂線方向: ({direction_x:.3f}, {direction_y:.3f})")
+        
+        # 從碰撞點開始，延伸一大段距離（例如 2000）
+        extension_length = 2000
+        next_end_x = new_end.x + direction_x * extension_length
+        next_end_y = new_end.y + direction_y * extension_length
+        
+        # 更新當前的起點和終點
+        current_start = new_end  # 新的起點是上一次的碰撞點
+        current_end = Point(next_end_x, next_end_y)
+        
+        print(f"{'  '*depth}  [繼續 Hyperplane] 準備下一段: ({current_start.x:.1f}, {current_start.y:.1f}) -> ({current_end.x:.1f}, {current_end.y:.1f})")
+    
+    if iteration >= MAX_ITERATIONS:
+        print(f"{'  '*depth}  [繼續 Hyperplane] 警告：達到最大迭代次數 {MAX_ITERATIONS}，停止延伸")
+    
+    print(f"{'  '*depth}  [繼續 Hyperplane] 完成，共創建 {len(all_hyperplane_edges)} 段 hyperplane")
+    
+    # 整條 hyperplane 完成後，清理孤立邊
+    print(f"{'  '*depth}  [繼續 Hyperplane] 開始清理孤立邊...")
+    removed_edges = vd.remove_orphaned_edges()
+    if removed_edges:
+        print(f"{'  '*depth}  [繼續 Hyperplane] 清理了 {len(removed_edges)} 條孤立邊")
+    else:
+        print(f"{'  '*depth}  [繼續 Hyperplane] 沒有孤立邊需要清理")
+    
+    return all_hyperplane_edges
+
+
+def extend_line_to_boundary(mid_x, mid_y, direction_x, direction_y):
+    """
+    將中垂線從中點延伸到計算邊界
+    返回兩個端點 (x1, y1, x2, y2)
+    """
+    # 計算延伸到邊界所需的參數 t
+    # 我們需要找到線段與矩形邊界的交點
+    
+    # 防止除零
+    if abs(direction_x) < 1e-9 and abs(direction_y) < 1e-9:
+        return (mid_x, mid_y, mid_x, mid_y)
+    
+    # 計算與四條邊界的交點
+    t_values = []
+    
+    # 左邊界 (x = CALC_MIN)
+    if abs(direction_x) > 1e-9:
+        t = (CALC_MIN - mid_x) / direction_x
+        t_values.append(t)
+    
+    # 右邊界 (x = CALC_MAX_X)
+    if abs(direction_x) > 1e-9:
+        t = (CALC_MAX_X - mid_x) / direction_x
+        t_values.append(t)
+    
+    # 上邊界 (y = CALC_MIN)
+    if abs(direction_y) > 1e-9:
+        t = (CALC_MIN - mid_y) / direction_y
+        t_values.append(t)
+    
+    # 下邊界 (y = CALC_MAX_Y)
+    if abs(direction_y) > 1e-9:
+        t = (CALC_MAX_Y - mid_y) / direction_y
+        t_values.append(t)
+    
+    # 如果沒有交點，使用一個大的值
+    if not t_values:
+        large_t = 2000
+        t_values = [-large_t, large_t]
+    
+    # 取最小和最大的 t 值
+    t_min = min(t_values)
+    t_max = max(t_values)
+    
+    # 計算兩個端點
+    x1 = mid_x + t_min * direction_x
+    y1 = mid_y + t_min * direction_y
+    x2 = mid_x + t_max * direction_x
+    y2 = mid_y + t_max * direction_y
+    
+    return (x1, y1, x2, y2)
+
+
+def clip_to_canvas(x, y):
+    """將座標裁剪到畫布範圍內"""
+    x = max(0, min(CANVAS_WIDTH, x))
+    y = max(0, min(CANVAS_HEIGHT, y))
+    return (x, y)
+
+
+def clip_line_to_canvas(x1, y1, x2, y2):
+    """
+    使用 Cohen-Sutherland 算法將線段裁剪到畫布範圍
+    返回裁剪後的線段端點，如果完全在畫布外則返回 None
+    """
+    # 定義區域碼
+    INSIDE = 0  # 0000
+    LEFT = 1    # 0001
+    RIGHT = 2   # 0010
+    BOTTOM = 4  # 0100
+    TOP = 8     # 1000
+    
+    def compute_code(x, y):
+        """計算點的區域碼"""
+        code = INSIDE
+        if x < 0:
+            code |= LEFT
+        elif x > CANVAS_WIDTH:
+            code |= RIGHT
+        if y < 0:
+            code |= TOP
+        elif y > CANVAS_HEIGHT:
+            code |= BOTTOM
+        return code
+    
+    # 計算兩個端點的區域碼
+    code1 = compute_code(x1, y1)
+    code2 = compute_code(x2, y2)
+    
+    accept = False
+    
+    while True:
+        # 情況1: 兩點都在畫布內
+        if code1 == 0 and code2 == 0:
+            accept = True
+            break
+        
+        # 情況2: 兩點在畫布同一側外部
+        elif (code1 & code2) != 0:
+            break
+        
+        # 情況3: 部分在內部，需要裁剪
+        else:
+            # 選擇一個在外部的點
+            code_out = code1 if code1 != 0 else code2
+            
+            # 計算交點
+            if code_out & TOP:  # 上邊界 y = 0
+                x = x1 + (x2 - x1) * (0 - y1) / (y2 - y1)
+                y = 0
+            elif code_out & BOTTOM:  # 下邊界 y = CANVAS_HEIGHT
+                x = x1 + (x2 - x1) * (CANVAS_HEIGHT - y1) / (y2 - y1)
+                y = CANVAS_HEIGHT
+            elif code_out & RIGHT:  # 右邊界 x = CANVAS_WIDTH
+                y = y1 + (y2 - y1) * (CANVAS_WIDTH - x1) / (x2 - x1)
+                x = CANVAS_WIDTH
+            elif code_out & LEFT:  # 左邊界 x = 0
+                y = y1 + (y2 - y1) * (0 - x1) / (x2 - x1)
+                x = 0
+            
+            # 更新端點和區域碼
+            if code_out == code1:
+                x1, y1 = x, y
+                code1 = compute_code(x1, y1)
+            else:
+                x2, y2 = x, y
+                code2 = compute_code(x2, y2)
+    
+    if accept:
+        return (x1, y1, x2, y2)
+    else:
+        return None
 
 
 # 主程式部分
@@ -53,7 +901,7 @@ class VoronoiGUI:
         info_frame.pack_propagate(False)  # 保持固定寬度
         
         # 座標顯示區域
-        coord_label = tk.Label(info_frame, text="鼠標座標", font=("Arial", 12, "bold"), bg="lightgray")
+        coord_label = tk.Label(info_frame, text="滑鼠座標", font=("Arial", 12, "bold"), bg="lightgray")
         coord_label.pack(pady=10)
         
         self.coord_display = tk.Label(info_frame, text="X: --\nY: --", 
@@ -66,60 +914,34 @@ class VoronoiGUI:
         separator1.pack(fill=tk.X, padx=10, pady=10)
         
         # 點數統計
-        stats_label = tk.Label(info_frame, text="統計信息", font=("Arial", 12, "bold"), bg="lightgray")
+        stats_label = tk.Label(info_frame, text="統計資訊", font=("Arial", 12, "bold"), bg="lightgray")
         stats_label.pack(pady=(10, 5))
         
         self.stats_display = tk.Label(info_frame, text="點數: 0\n邊數: 0\n頂點數: 0", 
-                                     font=("Arial", 10), bg="white", 
-                                     relief=tk.SUNKEN, width=15, height=4)
+                                     font=("Arial", 9), bg="white", 
+                                     relief=tk.SUNKEN, width=18, height=12,
+                                     justify=tk.LEFT, anchor="nw")
         self.stats_display.pack(pady=5, padx=10)
         
         # 分隔線
         separator2 = tk.Frame(info_frame, height=2, bg="gray")
         separator2.pack(fill=tk.X, padx=10, pady=10)
         
-        # Step模式信息
-        step_label = tk.Label(info_frame, text="Step模式", font=("Arial", 12, "bold"), bg="lightgray")
-        step_label.pack(pady=(10, 5))
+        # 核心資料
+        self.points = []  # 當前的點集合
+        self.groups = []  # 從檔案讀取的多組測試資料
+        self.current_group = 0  # 當前顯示的組別
+        self.vd = VoronoiDiagram()  # Voronoi Diagram 實例
         
-        self.step_display = tk.Label(info_frame, text="模式: 正常\n步驟: --", 
-                                    font=("Arial", 10), bg="white", 
-                                    relief=tk.SUNKEN, width=15, height=3)
-        self.step_display.pack(pady=5, padx=10)
-        
-        # 初始化變數
-        self.points = []
-        self.groups = []
-        self.current_group = 0
-        self.vd = VoronoiDiagram()  # 創建單一的 VoronoiDiagram 實例
-        
-        # 用於調試顯示的變量
-        self.debug_left_hull = []
-        self.debug_right_hull = []
-        self.debug_merged_hull = []  # 新增：合併凸包
-        self.debug_A = None
-        self.debug_B = None
-        
-        # 記錄上一輪被截斷改變的端點
-        self.last_truncated_vertices = []
-        
-        # 邊生命值系統：端點引用追蹤
-        self.vertex_references = {}  # {(x, y): [edge1, edge2, ...]} 追蹤每個端點被哪些邊引用
-        
-        # UI控制變量
-        self.show_convex_hull = tk.BooleanVar(value=False)  # 預設不顯示凸包
-        self.show_merged_hull = tk.BooleanVar(value=False)  # 預設不顯示合併凸包
-        
-        # Step by step 功能
-        self.merge_steps = []  # 儲存每個merge步驟的狀態
-        self.current_step = -1  # 當前顯示的步驟，-1表示顯示完整結果
+        # Step-by-step 控制
         self.is_step_mode = False  # 是否處於step模式
-        self.previous_step_points = []  # 上次執行step時的points
-        self.steps_calculated = False  # 是否已經計算過步驟
+        self.current_step = -1  # -1表示顯示完整結果
+        self.steps_calculated = False  # 是否已計算過步驟
+        self.previous_points = []  # 上次計算的點集
         
-        # Run功能的重複執行檢查
-        self.previous_run_points = []  # 上次執行run時的points
-        self.run_executed = False  # 標記是否已執行過run
+        # UI 控制
+        self.show_convex_hull = tk.BooleanVar(value=False)
+        self.show_merged_hull = tk.BooleanVar(value=False)
         
         # 初始化顯示
         self.update_stats_display()
@@ -165,3046 +987,1328 @@ class VoronoiGUI:
         """處理鼠標離開畫布事件"""
         self.coord_display.config(text="X: --\nY: --")
     
-    def list_all_edge_vertices(self):
-        """列出所有邊的頂點值"""
-        if not self.vd or not self.vd.edges:
-            print("ℹ️ 沒有邊可以顯示")
-            return
-        
-        print("\n" + "="*80)
-        print("📊 所有邊的頂點值列表")
-        print("="*80)
-        
-        total_edges = len(self.vd.edges)
-        edges_with_vertices = 0
-        edges_with_circumcenter = 0
-        
-        # 檢測重複邊
-        print("🔍 首先檢測重複邊...")
-        duplicate_pairs = []
-        for i in range(len(self.vd.edges)):
-            for j in range(i + 1, len(self.vd.edges)):
-                edge1 = self.vd.edges[i]
-                edge2 = self.vd.edges[j]
-                
-                if self.are_edges_duplicate(edge1, edge2):
-                    duplicate_pairs.append((i + 1, j + 1, edge1, edge2))
-        
-        if duplicate_pairs:
-            print(f"⚠️ 發現 {len(duplicate_pairs)} 對重複邊:")
-            for i, (idx1, idx2, edge1, edge2) in enumerate(duplicate_pairs):
-                site1_1, site2_1 = edge1.get_bisected_points()
-                site1_2, site2_2 = edge2.get_bisected_points()
-                print(f"   重複邊組 {i+1}: 邊{idx1} 和 邊{idx2}")
-                print(f"     邊{idx1}: 平分點 ({site1_1.x}, {site1_1.y}) 和 ({site2_1.x}, {site2_1.y})")
-                print(f"     邊{idx2}: 平分點 ({site1_2.x}, {site1_2.y}) 和 ({site2_2.x}, {site2_2.y})")
-        else:
-            print("✅ 沒有發現重複邊")
-        
-        print("\n" + "-"*80)
-        
-        for i, edge in enumerate(self.vd.edges, 1):
-            # 獲取平分的兩個點
-            site1, site2 = edge.get_bisected_points()
-            
-            print(f"\n🔗 邊 {i}/{total_edges}:")
-            print(f"   • 平分點: ({site1.x:.1f}, {site1.y:.1f}) 和 ({site2.x:.1f}, {site2.y:.1f})")
-            
-            # 頂點信息
-            if edge.start_vertex and edge.end_vertex:
-                edges_with_vertices += 1
-                print(f"   • 起始頂點: ({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f})")
-                print(f"   • 結束頂點: ({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})")
-                
-                # 計算邊的長度
-                length = ((edge.end_vertex.x - edge.start_vertex.x)**2 + 
-                         (edge.end_vertex.y - edge.start_vertex.y)**2) ** 0.5
-                print(f"   • 邊長度: {length:.2f}")
-            else:
-                print(f"   • 頂點: 無限邊或未定義")
-            
-            # 外心信息
-            if hasattr(edge, 'circumcenter') and edge.circumcenter:
-                edges_with_circumcenter += 1
-                print(f"   • 外心: ({edge.circumcenter.x:.2f}, {edge.circumcenter.y:.2f})")
-            
-            # 特殊標記
-            if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane:
-                print(f"   • 類型: 🗺️ 超平面 (midAB)")
-            else:
-                print(f"   • 類型: 🟦 一般 Voronoi 邊")
-            
-            # 碰撞信息
-            if hasattr(edge, 'is_cross') and edge.is_cross:
-                print(f"   • 碰撞狀態: ✅ 已被碰撞")
-                if hasattr(edge, 'cross_point') and edge.cross_point:
-                    print(f"   • 碰撞點: ({edge.cross_point.x:.2f}, {edge.cross_point.y:.2f})")
-        
-        print("\n" + "-"*80)
-        print(f"📊 統計總結:")
-        print(f"   • 總邊數: {total_edges}")
-        print(f"   • 有頂點的邊: {edges_with_vertices}")
-        print(f"   • 有外心的邊: {edges_with_circumcenter}")
-        print(f"   • 無限邊: {total_edges - edges_with_vertices}")
-        print("-"*80)
-
-    def perform_final_edge_cleanup(self):
-        """最終清理：移除任何仍然具有歷史截斷端點的邊"""
-        if not hasattr(self, 'last_truncated_vertices_for_final_check') or not self.last_truncated_vertices_for_final_check:
-            return
-        
-        edges_to_remove = []
-        
-        print(f"檢查 {len(self.vd.edges)} 條邊是否具有 {len(self.last_truncated_vertices_for_final_check)} 個歷史截斷端點...")
-        
-        for i, edge in enumerate(self.vd.edges):
-            if not edge.start_vertex or not edge.end_vertex:
-                continue
-                
-            for vertex in self.last_truncated_vertices_for_final_check:
-                # 檢查起始頂點
-                start_distance = ((edge.start_vertex.x - vertex.x)**2 + (edge.start_vertex.y - vertex.y)**2) ** 0.5
-                end_distance = ((edge.end_vertex.x - vertex.x)**2 + (edge.end_vertex.y - vertex.y)**2) ** 0.5
-                
-                if start_distance < 5 or end_distance < 5:
-                    site1, site2 = edge.get_bisected_points()
-                    print(f"🗑️ 找到需要移除的邊 {i+1}: start({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f}) -> end({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})")
-                    print(f"   平分點: ({site1.x}, {site1.y}) 和 ({site2.x}, {site2.y})")
-                    print(f"   匹配截斷端點: ({vertex.x:.2f}, {vertex.y:.2f}), 起始距離: {start_distance:.2f}, 結束距離: {end_distance:.2f}")
-                    edges_to_remove.append(edge)
-                    break
-        
-        # 移除找到的邊
-        removed_count = 0
-        for edge in edges_to_remove:
-            if edge in self.vd.edges:
-                self.vd.edges.remove(edge)
-                removed_count += 1
-        
-        if removed_count > 0:
-            print(f"✅ 最終清理完成：移除了 {removed_count} 條具有截斷端點的邊")
-            print(f"   剩餘邊數: {len(self.vd.edges)}")
-            
-            # 重新輸出邊列表
-            print(f"\n重新輸出清理後的邊列表:")
-            self.list_all_edge_vertices()
-        else:
-            print(f"✅ 最終檢查完成：沒有發現需要移除的邊")
-
-    def are_edges_duplicate(self, edge1, edge2):
-        """檢查兩條邊是否重複（平分相同的兩個點）"""
-        site1_1, site2_1 = edge1.get_bisected_points()
-        site1_2, site2_2 = edge2.get_bisected_points()
-        
-        # 檢查兩條邊是否平分相同的兩個點（順序可能不同）
-        same_sites_1 = (site1_1.x == site1_2.x and site1_1.y == site1_2.y and 
-                       site2_1.x == site2_2.x and site2_1.y == site2_2.y)
-        same_sites_2 = (site1_1.x == site2_2.x and site1_1.y == site2_2.y and 
-                       site2_1.x == site1_2.x and site2_1.y == site1_2.y)
-        
-        return same_sites_1 or same_sites_2
-
-    def remove_duplicate_edges(self):
-        """移除重複的邊"""
-        if not self.vd or not self.vd.edges:
-            return 0
-        
-        edges_to_remove = []
-        removed_count = 0
-        
-        print("🧹 開始移除重複邊...")
-        
-        for i in range(len(self.vd.edges)):
-            if self.vd.edges[i] in edges_to_remove:
-                continue
-                
-            for j in range(i + 1, len(self.vd.edges)):
-                if self.vd.edges[j] in edges_to_remove:
-                    continue
-                    
-                if self.are_edges_duplicate(self.vd.edges[i], self.vd.edges[j]):
-                    # 標記較後面的邊待移除
-                    edges_to_remove.append(self.vd.edges[j])
-                    site1, site2 = self.vd.edges[j].get_bisected_points()
-                    print(f"   標記移除重複邊 {j+1}: 平分點 ({site1.x}, {site1.y}) 和 ({site2.x}, {site2.y})")
-        
-        # 實際移除邊
-        for edge in edges_to_remove:
-            if edge in self.vd.edges:
-                self.vd.edges.remove(edge)
-                removed_count += 1
-        
-        if removed_count > 0:
-            print(f"✅ 移除了 {removed_count} 條重複邊，剩餘邊數: {len(self.vd.edges)}")
-        else:
-            print("✅ 沒有發現重複邊需要移除")
-        
-        return removed_count
-
     def update_stats_display(self):
         """更新統計信息顯示"""
-        point_count = len(self.points)
-        edge_count = len(self.vd.edges) if hasattr(self, 'vd') and self.vd else 0
-        vertex_count = len(self.vd.vertices) if hasattr(self, 'vd') and self.vd else 0
+        num_sites = len(self.vd.sites) if hasattr(self, 'vd') else len(self.points)
+        num_edges = len(self.vd.edges) if hasattr(self, 'vd') else 0
+        num_vertices = len(self.vd.vertices) if hasattr(self, 'vd') else 0
         
-        self.stats_display.config(text=f"點數: {point_count}\n邊數: {edge_count}\n頂點數: {vertex_count}")
+        # 顯示座標列表
+        coords_text = ""
+        if self.points:
+            coords_text = "\n座標列表:\n"
+            for i, (x, y) in enumerate(self.points[-5:], start=max(0, len(self.points)-5)):
+                coords_text += f"  {i+1}. ({x:.0f}, {y:.0f})\n"
+            if len(self.points) > 5:
+                coords_text = f"\n...（共{len(self.points)}點）\n" + coords_text
+        
+        self.stats_display.config(
+            text=f"點數: {num_sites}\n邊數: {num_edges}\n頂點數: {num_vertices}{coords_text}"
+        )
     
     def update_step_display(self):
-        """更新Step模式信息顯示"""
-        if self.is_step_mode:
-            mode_text = "Step模式"
-            if self.current_step >= 0:
-                step_text = f"{self.current_step + 1}/{len(self.merge_steps)}"
-            else:
-                step_text = "完成"
-        else:
-            mode_text = "正常模式"
-            step_text = "--"
-        
-        self.step_display.config(text=f"模式: {mode_text}\n步驟: {step_text}")
+        """更新步驟顯示（預留用於顯示當前步驟資訊）"""
+        pass
     
     def add_point(self, event):
+        """處理鼠標點擊，添加點"""
         x, y = event.x, event.y
         self.points.append((x, y))
-        self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="black")
         
-        # 重置執行狀態，因為點發生了變化
-        self.run_executed = False
-        self.steps_calculated = False
-        
-        # 清空previous_run_points，強制下次執行
-        self.previous_run_points = []
-        
-        print(f"✨ 添加新點 ({x}, {y})，重置執行狀態")
-        
-        self.update_stats_display()  # 更新統計信息
+        # 重繪所有點：舊點為黑色，新點為紅色
+        self.redraw_points()
+        self.update_stats_display()
+        print(f"添加點: ({x}, {y})")
     
-    def refresh_display(self):
-        """重新繪製顯示內容 - 純視覺更新，不修改任何邊或頂點"""
-        # 記錄當前邊數，用於驗證
-        initial_edge_count = len(self.vd.edges) if hasattr(self, 'vd') and self.vd else 0
-        print(f"🎨 純視覺更新開始：當前邊數 {initial_edge_count}")
+    def redraw_points(self):
+        """重繪所有點：最後一個點為紅色（新加入），其餘為黑色"""
+        self.canvas.delete("all")
         
-        if self.is_step_mode and hasattr(self, 'merge_steps') and self.merge_steps:
-            # 在step模式下，重新顯示當前步驟
-            if 0 <= self.current_step < len(self.merge_steps):
-                self.show_step(self.current_step)
-            else:
-                # 如果不在有效範圍內，顯示完整結果
-                self.draw_voronoi()
-        elif hasattr(self, 'vd') and self.vd:
-            # 正常模式下，只進行繪製，不修改任何數據
-            self.draw_voronoi()
+        # 繪製舊點（黑色）
+        for i, (x, y) in enumerate(self.points[:-1]):
+            self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="black", outline="black")
         
-        # 驗證邊數沒有改變
-        final_edge_count = len(self.vd.edges) if hasattr(self, 'vd') and self.vd else 0
-        if final_edge_count != initial_edge_count:
-            print(f"⚠️ 警告：refresh_display 意外修改了邊數！{initial_edge_count} -> {final_edge_count}")
-        else:
-            print(f"✅ 視覺更新完成，邊數保持不變: {final_edge_count}")
+        # 繪製新點（紅色）
+        if self.points:
+            x, y = self.points[-1]
+            self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="red", outline="red")
     
-    
-    #主演算法部分
-    def run_voronoi(self):
-        if not self.points:
-            messagebox.showwarning("Warning", "No points to process")
+    def load_file(self):
+        """從文件讀取點資料"""
+        file_path = filedialog.askopenfilename(
+            title="選擇測試檔案",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        if not file_path:
             return
-
-        # 檢查點是否發生變化
-        points_changed = self.points != getattr(self, 'previous_run_points', [])
         
-        # 如果點沒有變化且已經執行過，不重複執行
-        if (not points_changed and hasattr(self, 'run_executed') and 
-            self.run_executed and hasattr(self, 'merge_steps') and self.merge_steps):
-            print("✅ 點未變化且已執行過，顯示 Step by Step 最後步驟")
-            # 顯示 Step by Step 的最後一個步驟
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            self.groups = []
+            i = 0
+            
+            while i < len(lines):
+                line = lines[i].strip()
+                
+                # 跳過空行和註解
+                if not line or line.startswith('#'):
+                    i += 1
+                    continue
+                
+                try:
+                    n = int(line)
+                    if n == 0:
+                        print("讀入點數為零，檔案測試停止")
+                        break
+                    
+                    # 讀取 n 個點
+                    points = []
+                    for j in range(n):
+                        i += 1
+                        if i >= len(lines):
+                            break
+                        
+                        point_line = lines[i].strip()
+                        
+                        # 跳過註解行
+                        while point_line.startswith('#') or not point_line:
+                            i += 1
+                            if i >= len(lines):
+                                break
+                            point_line = lines[i].strip()
+                        
+                        if point_line and not point_line.startswith('#'):
+                            parts = point_line.split()
+                            if len(parts) >= 2:
+                                x, y = float(parts[0]), float(parts[1])
+                                points.append((x, y))
+                    
+                    if points:
+                        self.groups.append(points)
+                        print(f"讀入第 {len(self.groups)} 組: {len(points)} 個點")
+                
+                except ValueError:
+                    pass
+                
+                i += 1
+            
+            if self.groups:
+                messagebox.showinfo("讀取成功", f"成功讀取 {len(self.groups)} 組測試資料")
+                self.current_group = 0
+                self.load_current_group()
+            else:
+                messagebox.showwarning("讀取失敗", "未找到有效的測試資料")
+        
+        except Exception as e:
+            messagebox.showerror("錯誤", f"讀取檔案時發生錯誤：{str(e)}")
+    
+    def load_current_group(self):
+        """載入當前組的點"""
+        if 0 <= self.current_group < len(self.groups):
+            self.canvas.delete("all")
+            self.vd.clear()
+            self.points = self.groups[self.current_group].copy()
+            self.reset_state()
+            
+            # 繪製所有點為黑色（已載入的點）
+            for x, y in self.points:
+                self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="black", outline="black")
+            
+            self.update_stats_display()
+            print(f"\n載入第 {self.current_group + 1}/{len(self.groups)} 組: {len(self.points)} 個點")
+            print(f"座標: {self.points}")
+    
+    def next_group(self):
+        """載入下一組測試資料"""
+        if not self.groups:
+            messagebox.showinfo("提示", "請先載入測試檔案")
+            return
+        
+        if self.current_group < len(self.groups) - 1:
+            self.current_group += 1
+            self.load_current_group()
+        else:
+            messagebox.showinfo("提示", "已經是最後一組資料")
+    
+    def prev_group(self):
+        """載入上一組測試資料"""
+        if not self.groups:
+            messagebox.showinfo("提示", "請先載入測試檔案")
+            return
+        
+        if self.current_group > 0:
+            self.current_group -= 1
+            self.load_current_group()
+        else:
+            messagebox.showinfo("提示", "已經是第一組資料")
+    
+    def clear_points(self):
+        """清空所有點和資料"""
+        self.canvas.delete("all")
+        self.points.clear()
+        self.vd.clear()
+        self.groups.clear()
+        self.current_group = 0
+        self.reset_state()
+        self.update_stats_display()
+        print("清空所有資料")
+    
+    def reset_state(self):
+        """重置計算狀態"""
+        self.current_step = -1
+        self.is_step_mode = False
+        self.steps_calculated = False
+        self.previous_points = []
+    
+    def run_voronoi(self):
+        """執行 Voronoi Diagram 計算並直接顯示最終結果"""
+        if not self.points:
+            messagebox.showwarning("警告", "請先添加點或載入測試資料")
+            return
+        
+        try:
+            # 初始化
+            self.vd.clear()
+            for x, y in self.points:
+                self.vd.add_site(x, y)
+            
+            print(f"\n===== 執行 Run - 計算 Voronoi Diagram =====")
+            print(f"點數: {len(self.points)}")
+            
+            # 執行計算
+            self.compute_voronoi_divide_conquer()
+            
+            # 設置為最終結果模式
             self.is_step_mode = False
             self.current_step = -1
             
-            # 使用最後一個 merge step 的結果
-            if self.merge_steps:
-                last_step = self.merge_steps[-1]
-                self.vd = last_step.voronoi_diagram
-                
-                # 設置調試信息以便顯示凸包
-                if hasattr(last_step, 'left_hull'):
-                    self.debug_left_hull = last_step.left_hull
-                if hasattr(last_step, 'right_hull'):
-                    self.debug_right_hull = last_step.right_hull
-                if hasattr(last_step, 'merged_hull'):
-                    self.debug_merged_hull = last_step.merged_hull
-                if hasattr(last_step, 'debug_A'):
-                    self.debug_A = last_step.debug_A
-                if hasattr(last_step, 'debug_B'):
-                    self.debug_B = last_step.debug_B
+            # 繪製結果
+            self.draw_voronoi_result()
             
-            self.draw_voronoi()
-            self.update_stats_display()
-            self.update_step_display()
-            return
-        
-        print(f"🚀 執行 Step by Step 算法並顯示最後步驟，點數: {len(self.points)}")
-        
-        # 清空之前的資料
-        self.merge_steps.clear()
-        self.current_step = -1
-        self.is_step_mode = False
-        
-        # 記錄當前執行狀態
-        self.previous_run_points = self.points[:]  # 複製當前點列表
-        self.run_executed = True  # 標記已執行
-        
-        # 重置step相關的狀態
-        self.steps_calculated = False
-        if hasattr(self, 'previous_step_points'):
-            self.previous_step_points = []
-        
-        # 執行 Step by Step 算法（記錄所有步驟）
-        points = [Point(x, y) for x, y in self.points]
-        all_steps = []  # 用於收集所有步驟
-        final_vd = self.build_voronoi(points, record_steps=True, all_steps=all_steps)
-        
-        # 將步驟保存到 merge_steps
-        self.merge_steps = all_steps
-        self.steps_calculated = True
-        
-        # 使用最後一個步驟的結果作為最終結果
-        if self.merge_steps:
-            last_step = self.merge_steps[-1]
-            self.vd = last_step.voronoi_diagram
+            print(f"完成！產生 {len(self.vd.edges)} 條邊，{len(self.vd.vertices)} 個頂點")
             
-            # 設置調試信息以便顯示凸包
-            if hasattr(last_step, 'left_hull'):
-                self.debug_left_hull = last_step.left_hull
-            if hasattr(last_step, 'right_hull'):
-                self.debug_right_hull = last_step.right_hull
-            if hasattr(last_step, 'merged_hull'):
-                self.debug_merged_hull = last_step.merged_hull
-            if hasattr(last_step, 'debug_A'):
-                self.debug_A = last_step.debug_A
-            if hasattr(last_step, 'debug_B'):
-                self.debug_B = last_step.debug_B
-            
-            print(f"✅ 使用最後一個步驟的結果，邊數: {len(self.vd.edges)}")
-        else:
-            # 如果沒有步驟（點數太少），使用直接計算的結果
-            self.vd = final_vd
-            print(f"✅ 使用直接計算的結果，邊數: {len(self.vd.edges)}")
-        
-        # 繪製結果
-        self.draw_voronoi()
-        
-        # 更新顯示信息
-        self.update_stats_display()
-        self.update_step_display()
-        
-        # 列出所有邊的頂點值
-        self.list_all_edge_vertices()
-        
-        print(f"🎆 RUN 完成：顯示與 Step by Step 最後步驟相同的結果")
-
-    # 建立Voronoi Diagram
-    def build_voronoi(self, points, record_steps=False, step_counter=None, all_steps=None):
-        if step_counter is None:
-            step_counter = [0]  # 使用列表來確保可以修改
-        if all_steps is None:
-            all_steps = []  # 用於儲存所有步驟
-            
-        vd = VoronoiDiagram()
-        vd.points = points  # 設置點集
-        for point in points:
-            vd.point_to_edges[point] = []  # 為每個點初始化空列表
-        
-        # 計算總共有多少點
-        total_points = len(points)
-        
-        # 基礎情況：點數量 <= 3
-        if total_points <= 3:
-            if total_points == 1:
-                return vd  # 單點無需處理
-            elif total_points == 2:
-                return self.build_voronoi_two_points(points, record_steps, step_counter, all_steps)
-            elif total_points == 3:
-                return self.build_voronoi_three_points(points, record_steps, step_counter, all_steps)
-        else:
-            # Divide：依照點的X座標排序
-            sorted_points = sorted(points, key=lambda p: p.x)
-            
-            # 依照X座標切為左右數量一樣的兩半
-            mid = total_points // 2
-            left_points = sorted_points[:mid]      # 左半部分（X座標較小）
-            right_points = sorted_points[mid:]     # 右半部分（X座標較大）
-            
-            # Conquer：遞迴處理左右兩部分
-            left_vd = self.build_voronoi(left_points, record_steps, step_counter, all_steps)
-            
-            # 記錄左子圖構建步驟
-            if record_steps and len(left_points) > 1:
-                step_counter[0] += 1
-                build_step = BuildStep(step_counter[0], f"左子圖構建完成 ({len(left_points)}個點)", left_vd, "left", left_points)
-                all_steps.append(build_step)
-            
-            right_vd = self.build_voronoi(right_points, record_steps, step_counter, all_steps)
-            
-            # 記錄右子圖構建步驟
-            if record_steps and len(right_points) > 1:
-                step_counter[0] += 1
-                build_step = BuildStep(step_counter[0], f"右子圖構建完成 ({len(right_points)}個點)", right_vd, "right", right_points)
-                all_steps.append(build_step)
-            
-            # Merge：合併左右子問題的結果
-            merged_vd = self.merge_voronoi(left_vd, right_vd, record_steps, step_counter, all_steps)
-            return merged_vd
-
-    #兩個點的處理
-    def build_voronoi_two_points(self, points, record_steps=False, step_counter=None, all_steps=None):
-        vd = VoronoiDiagram()
-        vd.points = points
-        for point in points:
-            vd.point_to_edges[point] = []
-        p1, p2 = points[0], points[1]
-        # 共點則不做任何處理
-        if p1.x == p2.x and p1.y == p2.y:
-            return vd
-        
-        # 記錄兩兩取中垂線步驟
-        if record_steps and step_counter and all_steps is not None:
-            step_counter[0] += 1
-            temp_vd = VoronoiDiagram()
-            temp_vd.points = points
-            for point in points:
-                temp_vd.point_to_edges[point] = []
-            
-            build_step = BuildStep(step_counter[0], f"兩點取中垂線：({p1.x}, {p1.y}) 和 ({p2.x}, {p2.y})", temp_vd, "", points)
-            all_steps.append(build_step)
-        
-        start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(p1, p2)
-        edge = VoronoiEdge(p1, p2)
-        edge.set_start_vertex(start)
-        edge.set_end_vertex(end)
-        vd.add_vertex(start)
-        vd.add_vertex(end)
-        vd.add_edge(edge)
-        
-        # 記錄完成的兩點Voronoi圖
-        if record_steps and step_counter and all_steps is not None:
-            step_counter[0] += 1
-            build_step = BuildStep(step_counter[0], f"兩點Voronoi圖完成：({p1.x}, {p1.y}) 和 ({p2.x}, {p2.y})", vd, "", points)
-            all_steps.append(build_step)
-        
-        return vd
-
-    #三個點的處理
-    #處理鈍角和銳角三角形的情況
-    def build_voronoi_three_points(self, points, record_steps=False, step_counter=None, all_steps=None):
-        vd = VoronoiDiagram()
-        vd.points = points
-        for point in points:
-            vd.point_to_edges[point] = []
-        p1, p2, p3 = points[0], points[1], points[2]
-        
-        # 記錄三點取中垂線步驟
-        if record_steps and step_counter and all_steps is not None:
-            step_counter[0] += 1
-            temp_vd = VoronoiDiagram()
-            temp_vd.points = points
-            for point in points:
-                temp_vd.point_to_edges[point] = []
-            
-            build_step = BuildStep(step_counter[0], f"三點取中垂線：({p1.x}, {p1.y}), ({p2.x}, {p2.y}), ({p3.x}, {p3.y})", temp_vd, "", points)
-            all_steps.append(build_step)
-        
-        # 判斷三點是否共線
-        area = abs((p2.x - p1.x)*(p3.y - p1.y) - (p3.x - p1.x)*(p2.y - p1.y))
-        if area == 0:
-            # 三點共線，僅求最遠兩點以外的兩條中垂線
-            d12 = (p1.x - p2.x)**2 + (p1.y - p2.y)**2
-            d23 = (p2.x - p3.x)**2 + (p2.y - p3.y)**2
-            d13 = (p1.x - p3.x)**2 + (p1.y - p3.y)**2
-            # 找出最遠的兩點
-            max_d = max(d12, d23, d13)
-            pairs = [(p1, p2), (p2, p3), (p3, p1)]
-            
-            # 記錄共線處理步驟
-            if record_steps and step_counter and all_steps is not None:
-                step_counter[0] += 1
-                temp_vd = VoronoiDiagram()
-                temp_vd.points = points
-                for point in points:
-                    temp_vd.point_to_edges[point] = []
-                
-                build_step = BuildStep(step_counter[0], f"三點共線處理：跳過最遠兩點的中垂線", temp_vd, "", points)
-                all_steps.append(build_step)
-            
-            for idx, (a, b) in enumerate(pairs):
-                d = (a.x - b.x)**2 + (a.y - b.y)**2
-                if d != max_d:
-                    start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(a, b)
-                    edge = VoronoiEdge(a, b)
-                    edge.set_start_vertex(start)
-                    edge.set_end_vertex(end)
-                    vd.add_vertex(start)
-                    vd.add_vertex(end)
-                    vd.add_edge(edge)
-            
-            # 記錄共線完成步驟
-            if record_steps and step_counter and all_steps is not None:
-                step_counter[0] += 1
-                build_step = BuildStep(step_counter[0], f"三點共線Voronoi圖完成", vd, "", points)
-                all_steps.append(build_step)
-            
-            return vd
-        
-        # 不共線，處理三條中垂線
-        vertex = self.calculate_circumcenter(p1, p2, p3)
-        
-        # 記錄計算外心步驟
-        if record_steps and step_counter and all_steps is not None:
-            step_counter[0] += 1
-            temp_vd = VoronoiDiagram()
-            temp_vd.points = points
-            for point in points:
-                temp_vd.point_to_edges[point] = []
-            if vertex:
-                temp_vd.add_vertex(vertex)
-            
-            description = f"計算外心：({vertex.x:.2f}, {vertex.y:.2f})" if vertex else "外心計算失敗（可能為鈍角三角形）"
-            build_step = BuildStep(step_counter[0], description, temp_vd, "", points)
-            all_steps.append(build_step)
-        
-        # 記錄原始中垂線步驟
-        if record_steps and step_counter and all_steps is not None:
-            step_counter[0] += 1
-            temp_vd = VoronoiDiagram()
-            temp_vd.points = points
-            for point in points:
-                temp_vd.point_to_edges[point] = []
-            if vertex:
-                temp_vd.add_vertex(vertex)
-            
-            # 添加三條完整的原始中垂線
-            pairs = [(p1, p2), (p2, p3), (p3, p1)]
-            for a, b in pairs:
-                start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(a, b)
-                edge = VoronoiEdge(a, b)
-                edge.set_start_vertex(start)
-                edge.set_end_vertex(end)
-                # 標記為原始中垂線
-                edge.is_original_bisector = True
-                temp_vd.add_vertex(start)
-                temp_vd.add_vertex(end)
-                temp_vd.add_edge(edge)
-            
-            build_step = BuildStep(step_counter[0], f"原始兩兩中垂線：未經截斷的完整中垂線", temp_vd, "", points)
-            all_steps.append(build_step)
-        
-        # 檢查外心是否存在
-        circumcenter_valid = (vertex is not None)
-        
-        # 計算三邊長，找出最遠的兩點
-        def dist2(a, b):
-            return (a.x - b.x)**2 + (a.y - b.y)**2
-        
-        d12 = dist2(p1, p2)
-        d23 = dist2(p2, p3) 
-        d13 = dist2(p1, p3)
-        max_dist = max(d12, d23, d13)
-        
-        # 找出最遠的兩點
-        if max_dist == d12:
-            farthest_pair = (p1, p2)
-        elif max_dist == d23:
-            farthest_pair = (p2, p3)
-        else:
-            farthest_pair = (p1, p3)
-        
-        # 如果外心無效，只繪製兩兩接近的點，跳過最遠兩點
-        if not circumcenter_valid:
-            pairs = [(p1, p2), (p2, p3), (p3, p1)]
-            for a, b in pairs:
-                # 跳過最遠的兩點
-                if (a, b) == farthest_pair or (b, a) == farthest_pair:
-                    continue
-                    
-                start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(a, b)
-                edge = VoronoiEdge(a, b)
-                edge.set_start_vertex(start)
-                edge.set_end_vertex(end)
-                vd.add_vertex(start)
-                vd.add_vertex(end)
-                vd.add_edge(edge)
-        else:
-            # 外心有效，進行正常的三角形處理
-            # 計算三邊長
-            a2 = dist2(p2, p3)
-            b2 = dist2(p1, p3)
-            c2 = dist2(p1, p2)
-            a = a2 ** 0.5
-            b = b2 ** 0.5
-            c = c2 ** 0.5
-
-            # 計算三角形三個角的 cos 值
-            # 角A在p1，角B在p2，角C在p3
-            cosA = (b2 + c2 - a2) / (2 * b * c)
-            cosB = (a2 + c2 - b2) / (2 * a * c)
-            cosC = (a2 + b2 - c2) / (2 * a * b)
-
-            if cosA < 0 or cosB < 0 or cosC < 0:
-                # 情況1：鈍角三角形
-                # 判斷哪個點為鈍角頂點
-                if cosA < 0:
-                    obtuse_point = p1
-                elif cosB < 0:
-                    obtuse_point = p2
-                else:
-                    obtuse_point = p3
-                
-                # 針對鈍角三角形做特殊處理
-                vd.add_vertex(vertex)
-                pairs = [(p1, p2), (p2, p3), (p3, p1)]
-                points_list = [p1, p2, p3]
-                for idx, (a, b) in enumerate(pairs):
-                    start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(a, b)
-                    third = points_list[(idx + 2) % 3]
-                    # 計算單位向量
-                    def unit_vector(p_from, p_to):
-                        dx = p_to.x - p_from.x
-                        dy = p_to.y - p_from.y
-                        length = (dx**2 + dy**2) ** 0.5
-                        if length == 0:
-                            return 0, 0
-                        return dx / length, dy / length
-                    ux_s, uy_s = unit_vector(vertex, start)
-                    VtoS = VoronoiVertex(vertex.x + ux_s, vertex.y + uy_s)
-                    ux_e, uy_e = unit_vector(vertex, end)
-                    VtoE = VoronoiVertex(vertex.x + ux_e, vertex.y + uy_e)
-                    mx = (a.x + b.x) / 2
-                    my = (a.y + b.y) / 2
-                    dist_VtoS_m = (VtoS.x - mx)**2 +(VtoS.y - my)**2
-                    dist_VtoE_m = (VtoE.x - mx)**2 + (VtoE.y - my)**2
-
-                    #鈍角對面的中垂線需反向
-                    if obtuse_point not in (a, b):
-                        if dist_VtoS_m < dist_VtoE_m:
-                            start, end = VtoS, end
-                        else:
-                            start, end = VtoE, start
-                    #其餘兩條保持不變
-                    else:
-                        if dist_VtoS_m > dist_VtoE_m:
-                            start, end = VtoS, end
-                        else:
-                            start, end = VtoE, start
-                    edge = VoronoiEdge(a, b)
-                    edge.set_start_vertex(start)
-                    edge.set_end_vertex(end)
-                    vd.add_vertex(start)
-                    vd.add_vertex(end)
-                    vd.add_edge(edge)
-            else:
-                # 情況2：銳角三角形，原本邏輯不變
-                vd.add_vertex(vertex)
-                for idx, (a, b) in enumerate([(p1, p2), (p2, p3), (p3, p1)]):
-                    start, end = VoronoiEdge.get_perpendicular_bisector_unlimited(a, b)
-                    third = [p1, p2, p3][(idx + 2) % 3]
-                    # 計算單位向量
-                    def unit_vector(p_from, p_to):
-                        dx = p_to.x - p_from.x
-                        dy = p_to.y - p_from.y
-                        length = (dx**2 + dy**2) ** 0.5
-                        if length == 0:
-                            return 0, 0
-                        return dx / length, dy / length
-                    ux_s, uy_s = unit_vector(vertex, start)
-                    VtoS = VoronoiVertex(vertex.x + ux_s, vertex.y + uy_s)
-                    ux_e, uy_e = unit_vector(vertex, end)
-                    VtoE = VoronoiVertex(vertex.x + ux_e, vertex.y + uy_e)
-                    dist_VtoS_third = (VtoS.x - third.x)**2 + (VtoS.y - third.y)**2
-                    dist_VtoE_third = (VtoE.x - third.x)**2 + (VtoE.y - third.y)**2
-                    if dist_VtoS_third < dist_VtoE_third:
-                        new_start = vertex
-                        new_end = end
-                    else:
-                        new_start = vertex
-                        new_end = start
-                    edge = VoronoiEdge(a, b)
-                    edge.set_start_vertex(new_start)
-                    edge.set_end_vertex(new_end)
-                    vd.add_vertex(new_start)
-                    vd.add_vertex(new_end)
-                    vd.add_edge(edge)
-        
-        # 記錄三點Voronoi圖完成步驟
-        if record_steps and step_counter and all_steps is not None:
-            step_counter[0] += 1
-            triangle_type = "鈍角" if (cosA < 0 or cosB < 0 or cosC < 0) else "銳角"
-            build_step = BuildStep(step_counter[0], f"三點{triangle_type}三角形Voronoi圖完成", vd, "", points)
-            all_steps.append(build_step)
-        
-        return vd
+        except Exception as e:
+            messagebox.showerror("錯誤", f"計算過程發生錯誤：{str(e)}")
+            print(f"錯誤詳情：{e}")
+            import traceback
+            traceback.print_exc()
     
-
-    # 判斷點c是否在a和b之間（線段內部）
-    def is_between(a, b, c):
-        
-        cross = (c.x - a.x) * (b.x - a.x) + (c.y - a.y) * (b.y - a.y)
-        if cross < 0:
-            return False
-        dist_ab = (b.x - a.x)**2 + (b.y - a.y)**2
-        dist_ac = (c.x - a.x)**2 + (c.y - a.y)**2
-        return dist_ac <= dist_ab
-    
-
-    # 計算三點的外心（中垂線交點）
-    def calculate_circumcenter(self, p1, p2, p3):
-        
-        # 使用兩條中垂線的交點公式
-        ax, ay = p1.x, p1.y
-        bx, by = p2.x, p2.y
-        cx, cy = p3.x, p3.y
-        
-        d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
-        if d == 0:  # 三點共線
-            return None
-        
-        ux = ((ax**2 + ay**2) * (by - cy) + (bx**2 + by**2) * (cy - ay) + (cx**2 + cy**2) * (ay - by)) / d
-        uy = ((ax**2 + ay**2) * (cx - bx) + (bx**2 + by**2) * (ax - cx) + (cx**2 + cy**2) * (bx - ax)) / d
-        
-        return VoronoiVertex(ux, uy) 
-    
-
-    #合併左右子問題
-    def merge_voronoi(self, left_vd, right_vd, record_steps=False, step_counter=None, all_steps=None):
-        if step_counter is None:
-            step_counter = [0]
-            
-        merged_vd = VoronoiDiagram()
-        
-        # 合併點集
-        merged_vd.points = left_vd.points + right_vd.points
-        for point in merged_vd.points:
-            merged_vd.point_to_edges[point] = []
-        
-        # 如果其中一個子問題為空，直接返回另一個
-        if not left_vd.points:
-            return right_vd
-        if not right_vd.points:
-            return left_vd
-        
-        # 在MERGE前，將左右子圖當中所有邊都設為非hyperplane
-        print("將所有現有邊設為非hyperplane（藍色）")
-        for edge in left_vd.edges:
-            edge.is_hyperplane = False
-            print(f"左子圖邊: ({edge.site1.x}, {edge.site1.y})-({edge.site2.x}, {edge.site2.y}) 設為非hyperplane")
-        
-        for edge in right_vd.edges:
-            edge.is_hyperplane = False
-            print(f"右子圖邊: ({edge.site1.x}, {edge.site1.y})-({edge.site2.x}, {edge.site2.y}) 設為非hyperplane")
-        
-        # 暫不合併邊，等待迭代處理完成後再合併
-        # merged_vd.edges = left_vd.edges + right_vd.edges
-        # merged_vd.vertices = left_vd.vertices + right_vd.vertices
-        
-        # 計算左右分界線
-        left_max_x = max(p.x for p in left_vd.points)
-        right_min_x = min(p.x for p in right_vd.points)
-        separator_x = (left_max_x + right_min_x) / 2
-        
-        # 在迭代開始前設置邊列表供生命值系統使用
-        print(f"\n🔧 *** 在迭代前設置邊列表供生命值系統使用 *** 🔧")
-        print(f"👉 left_vd.edges: {len(left_vd.edges)} 條")
-        print(f"👉 right_vd.edges: {len(right_vd.edges)} 條")
-        
-        # 設置邊列表供生命值系統使用（使用副本避免被修改）
-        self.left_edges_for_checking = left_vd.edges.copy()
-        self.right_edges_for_checking = right_vd.edges.copy()
-        
-        print(f"✅ 已設置 left_edges_for_checking: {len(self.left_edges_for_checking)} 條")
-        print(f"✅ 已設置 right_edges_for_checking: {len(self.right_edges_for_checking)} 條")
-        
-        # 初始化邊生命值系統：清空引用記錄並重新建立
-        self.vertex_references.clear()
-        
-        # 註冊所有邊的端點引用
-        all_normal_edges = left_vd.edges + right_vd.edges
-        for edge in all_normal_edges:
-            self.register_edge_vertices(edge)
-            
-        print(f"🔧 *** 邊列表設置完成，迭代開始 *** 🔧\n")
-        
-        # 1.找到X最大的A點和X最小的B點
-        A = max(left_vd.points, key=lambda p: p.x)
-        B = min(right_vd.points, key=lambda p: p.x)
-        
-        print(f"初始 A: ({A.x}, {A.y}), B: ({B.x}, {B.y})")
-        
-        # 獲取左右兩側的凸包（修正順序）
-        left_hull = self.get_convex_hull_ordered(left_vd.points, False, A)  # 左側順時針，從A開始
-        right_hull = self.get_convex_hull_ordered(right_vd.points, True, B)  # 右側逆時針，從B開始
-        
-        # 確保A在left_hull中，B在right_hull中
-        if A not in left_hull:
-            print(f"警告: A點 ({A.x}, {A.y}) 不在左凸包中")
-            print(f"左凸包點: {[(p.x, p.y) for p in left_hull]}")
-            # 找到最接近的點
-            A = min(left_hull, key=lambda p: (p.x - A.x)**2 + (p.y - A.y)**2)
-            print(f"使用最接近的左凸包點: ({A.x}, {A.y})")
-        
-        if B not in right_hull:
-            print(f"警告: B點 ({B.x}, {B.y}) 不在右凸包中")
-            print(f"右凸包點: {[(p.x, p.y) for p in right_hull]}")
-            # 找到最接近的點
-            B = min(right_hull, key=lambda p: (p.x - B.x)**2 + (p.y - B.y)**2)
-            print(f"使用最接近的右凸包點: ({B.x}, {B.y})")
-        
-        # 保存調試信息
-        self.debug_left_hull = left_hull[:]
-        self.debug_right_hull = right_hull[:]
-        
-        print(f"左側凸包 (順時針，從A開始):")
-        for i, p in enumerate(left_hull):
-            marker = " ← A" if p == A else ""
-            print(f"  L{i}: ({p.x}, {p.y}){marker}")
-        
-        print(f"右側凸包 (逆時針，從B開始):")
-        for i, p in enumerate(right_hull):
-            marker = " ← B" if p == B else ""
-            print(f"  R{i}: ({p.x}, {p.y}){marker}")
-        
-        # 2. 使用更精確的上切線搜索算法
-        max_iterations = 20  # 防止無限循環
-        for iteration in range(max_iterations):
-            print(f"\n迭代 {iteration + 1}:")
-            
-            old_A, old_B = A, B
-            improved = False
-            
-            # 左半區A點：沿逆時針移動來找到更高的上切線
-            A_index = left_hull.index(A)
-            next_A = left_hull[(A_index + 1) % len(left_hull)]  # 在順時針排列的凸包上逆時針移動（索引+1）
-            
-            # 使用向量旋轉方向判斷是否應該移動A
-            if self.should_move_A(A, next_A, B):
-                A = next_A
-                improved = True
-                print(f"A 逆時針移動到: ({A.x}, {A.y})")
-            else:
-                print(f"A 維持不變: ({A.x}, {A.y})")
-            
-            # 右半區B點：沿順時針移動來找到更高的上切線
-            B_index = right_hull.index(B)
-            next_B = right_hull[(B_index + 1) % len(right_hull)]  # 在逆時針排列的凸包上順時針移動（索引+1）
-            
-            # 使用向量旋轉方向判斷是否應該移動B
-            if self.should_move_B(A, B, next_B):
-                B = next_B
-                improved = True
-                print(f"B 順時針移動到: ({B.x}, {B.y})")
-            else:
-                print(f"B 維持不變: ({B.x}, {B.y})")
-            
-            # 檢查是否收斂（AB都不動）
-            if not improved:
-                print(f"\n收斂！最終 A: ({A.x}, {A.y}), B: ({B.x}, {B.y})")
-                break
-        
-        # 保存最終的A和B用於調試顯示
-        self.debug_A = A
-        self.debug_B = B
-        
-        # 使用最終的A和B創建中垂線
-        midAB_start, midAB_end = VoronoiEdge.get_perpendicular_bisector_unlimited(A, B)
-        
-        # 按照Y值排序：Y小的設為起始點，Y大的設為結束點
-        if midAB_start.y > midAB_end.y:
-            midAB_start, midAB_end = midAB_end, midAB_start
-            
-        print(f"midAB 碰到圖形邊緣: 起始點(Y={midAB_start.y:.2f}): ({midAB_start.x:.2f}, {midAB_start.y:.2f})")
-        print(f"                    結束點(Y={midAB_end.y:.2f}): ({midAB_end.x:.2f}, {midAB_end.y:.2f})")
-        
-        midAB = VoronoiEdge(A, B, is_hyperplane=True)
-        midAB.set_start_vertex(midAB_start)
-        midAB.set_end_vertex(midAB_end)
-        
-        # 檢查 midAB 與現有邊的第一個交點（從起始點開始）
-        all_existing_edges = left_vd.edges + right_vd.edges
-        first_collision = None
-        closest_distance = float('inf')
-        
-        for existing_edge in all_existing_edges:
-            intersection_point = midAB.find_intersection(existing_edge)
-            if intersection_point:
-                # 檢查交點是否在現有邊的線段範圍內
-                if existing_edge.is_point_between_vertices(intersection_point):
-                    # 計算從起始點到交點的距離
-                    distance = ((intersection_point.x - midAB_start.x)**2 + 
-                              (intersection_point.y - midAB_start.y)**2) ** 0.5
-                    
-                    # 找到最接近起始點的交點
-                    if distance < closest_distance:
-                        closest_distance = distance
-                        bisected_points = existing_edge.get_bisected_points()
-                        first_collision = {
-                            'point': intersection_point,
-                            'intersected_edge': existing_edge,
-                            'bisected_points': bisected_points
-                        }
-        
-        # 處理碰撞的迭代流程
-        current_A = A
-        current_B = B
-        
-        # 保存所有產生的cross點，用於後續截斷邏輯
-        all_cross_points = []
-        
-        # 獲取初始的midAB邊緣交點，按Y值排序
-        midAB_start, midAB_end = VoronoiEdge.get_perpendicular_bisector_unlimited(current_A, current_B)
-        if midAB_start.y > midAB_end.y:
-            midAB_start, midAB_end = midAB_end, midAB_start
-        
-        current_cross = midAB_start  # 第一次從邊緣起始點開始
-        
-        max_iterations = 20  # 防止無限循環
-        for iteration in range(max_iterations):
-            print(f"\n=== midAB 迭代 {iteration + 1} ===")
-            print(f"當前 A: ({current_A.x}, {current_A.y}), B: ({current_B.x}, {current_B.y})")
-            print(f"起始點: ({current_cross.x:.2f}, {current_cross.y:.2f})")
-            
-            # 暫時禁用迭代中的清理，需要重新設計基於端點引用計數的系統
-            pass
-            
-            # 創建從current_cross開始的midAB
-            if iteration == 0:
-                current_midAB_start = midAB_start
-                current_midAB_end = midAB_end
-            else:
-                # 從current_cross開始，重新計算midAB的端點
-                current_midAB_start = current_cross
-                
-                # 重新計算完整的midAB邊界交點
-                temp_start, temp_end = VoronoiEdge.get_perpendicular_bisector_unlimited(current_A, current_B)
-                
-                # 計算從current_cross到兩個端點的Y方向距離
-                to_temp_start_y = temp_start.y - current_cross.y
-                to_temp_end_y = temp_end.y - current_cross.y
-                
-                # 選擇Y方向增量較大的端點作為結束點，確保往Y較大方向
-                if to_temp_end_y > to_temp_start_y:
-                    current_midAB_end = temp_end
-                    print(f"選擇temp_end作為結束點，Y方向增量: {to_temp_end_y:.2f}")
-                else:
-                    current_midAB_end = temp_start
-                    print(f"選擇temp_start作為結束點，Y方向增量: {to_temp_start_y:.2f}")
-            
-            # 最終檢查：確保midAB段是往Y較大方向：結束點Y > 起始點Y
-            if current_midAB_end.y < current_midAB_start.y:
-                print(f"midAB方向仍然錯誤：起始點Y({current_midAB_start.y:.2f}) >= 結束點Y({current_midAB_end.y:.2f})")
-                # 如果還是不對，強制創建一個往Y較大方向的端點
-                current_midAB_end = VoronoiVertex(current_midAB_start.x, current_midAB_start.y + 100)
-                print(f"強制修正：結束點設為 ({current_midAB_end.x:.2f}, {current_midAB_end.y:.2f})")
-            
-            print(f"midAB 線段: 從 ({current_midAB_start.x:.2f}, {current_midAB_start.y:.2f}) 到 ({current_midAB_end.x:.2f}, {current_midAB_end.y:.2f})")
-            print(f"  起始點Y: {current_midAB_start.y:.2f}, 結束點Y: {current_midAB_end.y:.2f} (結束點Y較大: {current_midAB_end.y > current_midAB_start.y})")
-            
-            # 創建當前的midAB線段（標記為hyperplane）
-            current_midAB = VoronoiEdge(current_A, current_B, is_hyperplane=True)
-            current_midAB.set_start_vertex(current_midAB_start)
-            current_midAB.set_end_vertex(current_midAB_end)
-            
-            # 尋找所有碰撞點並檢查是否有接近的多個碰撞點
-            all_collisions = []
-            
-            for existing_edge in all_existing_edges:
-                intersection_point = current_midAB.find_intersection(existing_edge)
-                if intersection_point:
-                    # 檢查交點是否在existing_edge的線段範圍內
-                    if existing_edge.is_point_between_vertices(intersection_point):
-                        # 檢查交點是否在midAB線段的範圍內
-                        if current_midAB.is_point_between_vertices(intersection_point):
-                            distance = ((intersection_point.x - current_midAB_start.x)**2 + 
-                                      (intersection_point.y - current_midAB_start.y)**2) ** 0.5
-                            
-                            print(f"找到有效交點: ({intersection_point.x:.2f}, {intersection_point.y:.2f}), 距離: {distance:.2f}")
-                            
-                            if distance > 1e-6:
-                                all_collisions.append({
-                                    'point': intersection_point,
-                                    'intersected_edge': existing_edge,
-                                    'bisected_points': existing_edge.get_bisected_points(),
-                                    'distance': distance
-                                })
-                        else:
-                            print(f"交點({intersection_point.x:.2f}, {intersection_point.y:.2f})不在midAB線段範圍內，跳過")
-                    else:
-                        print(f"交點({intersection_point.x:.2f}, {intersection_point.y:.2f})不在existing_edge線段範圍內，跳過")
-            
-            # 根據距離排序碰撞點
-            all_collisions.sort(key=lambda c: c['distance'])
-            
-            # 檢查是否有多個接近的碰撞點（X,Y差距均在3以內）
-            close_collisions = []
-            if all_collisions:
-                primary_collision = all_collisions[0]  # 最近的碰撞點
-                close_collisions.append(primary_collision)
-                
-                for collision in all_collisions[1:]:
-                    # 檢查是否與主要碰撞點足夠接近
-                    x_diff = abs(collision['point'].x - primary_collision['point'].x)
-                    y_diff = abs(collision['point'].y - primary_collision['point'].y)
-                    
-                    if x_diff <= 3 and y_diff <= 3:
-                        close_collisions.append(collision)
-                        print(f"發現接近的碰撞點: ({collision['point'].x:.2f}, {collision['point'].y:.2f}), 與主要碰撞點距離: X差={x_diff:.2f}, Y差={y_diff:.2f}")
-                
-                print(f"共發現 {len(close_collisions)} 個接近的碰撞點")
-            
-            # 選擇處理的碰撞點（如果只有一個或沒有，使用原有邏輯）
-            collision = close_collisions[0] if close_collisions else None
-            
-            # 處理碰撞
-            if collision:
-                new_cross = collision['point']
-                intersected_edge = collision['intersected_edge']
-                site1, site2 = collision['bisected_points']
-                
-                print(f"主要碰撞點: ({new_cross.x:.2f}, {new_cross.y:.2f})")
-                
-                # 保存cross點
-                all_cross_points.append(new_cross)
-                
-                # 為主要被碰撞的邊設置碰撞信息
-                intersected_edge.set_cross_info(new_cross, current_midAB)
-                print(f"為主要邊設置碰撞信息: is_cross=True, cross_point=({new_cross.x:.2f}, {new_cross.y:.2f})")
-                
-                # 處理所有接近的碰撞點
-                affected_sites = set([site1, site2])  # 收集所有受影響的site點
-                
-                for close_collision in close_collisions[1:]:  # 跳過第一個（主要碰撞點）
-                    close_edge = close_collision['intersected_edge']
-                    close_site1, close_site2 = close_collision['bisected_points']
-                    close_point = close_collision['point']
-                    
-                    print(f"處理接近的碰撞點: ({close_point.x:.2f}, {close_point.y:.2f})")
-                    
-                    # 為接近的碰撞邊也設置碰撞信息
-                    close_edge.set_cross_info(close_point, current_midAB)
-                    print(f"為接近的邊設置碰撞信息: is_cross=True, cross_point=({close_point.x:.2f}, {close_point.y:.2f})")
-                    
-                    # 收集受影響的site點
-                    affected_sites.add(close_site1)
-                    affected_sites.add(close_site2)
-                    
-                    # 保存close cross點
-                    all_cross_points.append(close_point)
-                    
-                    # 處理接近的被碰撞邊（截斷）
-                    close_truncated_vertices = self.truncate_intersected_edge(close_edge, close_point, left_vd.points + right_vd.points, left_vd.points, right_vd.points, self.debug_left_hull, self.debug_right_hull, left_vd.edges + right_vd.edges, midAB)
-                    # 將截斷的端點添加到記錄中
-                    if close_truncated_vertices:
-                        self.last_truncated_vertices.extend(close_truncated_vertices)
-                        print(f"當前迭代新增了 {len(close_truncated_vertices)} 個接近邊的截斷端點")
-                    else:
-                        close_truncated_vertices = []  # 確保不是None
-                
-                print(f"所有受影響的site點: {[(site.x, site.y) for site in affected_sites]}")
-                
-                # 檢查碰撞點是否在合理的範圍內
-                # 計算碰撞點到midAB線段的距離，確保它在線段上或附近
-                distance_to_start = ((new_cross.x - current_midAB_start.x)**2 + 
-                                   (new_cross.y - current_midAB_start.y)**2) ** 0.5
-                distance_to_end = ((new_cross.x - current_midAB_end.x)**2 + 
-                                 (new_cross.y - current_midAB_end.y)**2) ** 0.5
-                total_length = ((current_midAB_end.x - current_midAB_start.x)**2 + 
-                               (current_midAB_end.y - current_midAB_start.y)**2) ** 0.5
-                
-                print(f"碰撞點距離檢查: 到起始點={distance_to_start:.2f}, 到結束點={distance_to_end:.2f}, 線段總長={total_length:.2f}")
-                
-                # 如果碰撞點距離起始點很近（小於5像素），可能是重複碰撞，跳過
-                if distance_to_start < 5:
-                    print(f"碰撞點距離起始點太近({distance_to_start:.2f} < 5)，可能是重複碰撞，跳過")
-                    print(f"直接繪製完整midAB：從起始點 ({current_midAB_start.x:.2f}, {current_midAB_start.y:.2f}) 到結束點 ({current_midAB_end.x:.2f}, {current_midAB_end.y:.2f})")
-                    
-                    # 直接加入完整的midAB線段並結束迭代
-                    merged_vd.edges.append(current_midAB)
-                    break
-                
-                print(f"被碰撞線段由點 ({site1.x}, {site1.y}) 和 ({site2.x}, {site2.y}) 產生")
-                
-                # 確保當前midAB段是往Y較大方向：從上一個碰撞點到下一個碰撞點
-                previous_point = current_midAB.start_vertex  # 上一個碰撞點（或初始起始點）
-                next_collision_point = new_cross             # 下一個碰撞點
-                
-                # 檢查方向是否正確：上一個點的Y <= 下一個碰撞點的Y
-                if previous_point.y <= next_collision_point.y:
-                    # 方向正確：從上一個碰撞點到下一個碰撞點是往Y較大方向
-                    current_midAB.set_end_vertex(VoronoiVertex(next_collision_point.x, next_collision_point.y))
-                    print(f"midAB段方向正確：從上一個點 ({previous_point.x:.2f}, {previous_point.y:.2f}) 到下一個碰撞點 ({next_collision_point.x:.2f}, {next_collision_point.y:.2f})")
-                else:
-                    # 方向錯誤：上一個點的Y > 下一個碰撞點的Y，需要反向
-                    # 從下一個碰撞點到上一個點（使線段往Y較大方向）
-                    current_midAB.set_start_vertex(VoronoiVertex(next_collision_point.x, next_collision_point.y))
-                    current_midAB.set_end_vertex(previous_point)
-                    print(f"midAB段方向修正：從下一個碰撞點 ({next_collision_point.x:.2f}, {next_collision_point.y:.2f}) 到上一個點 ({previous_point.x:.2f}, {previous_point.y:.2f})")
-                
-                merged_vd.edges.append(current_midAB)
-                
-                # 處理主要被碰撞的邊
-                main_truncated_vertices = self.truncate_intersected_edge(intersected_edge, new_cross, left_vd.points + right_vd.points, left_vd.points, right_vd.points, self.debug_left_hull, self.debug_right_hull, left_vd.edges + right_vd.edges, midAB)
-                # 將截斷的端點添加到記錄中
-                if main_truncated_vertices:
-                    self.last_truncated_vertices.extend(main_truncated_vertices)
-                    print(f"當前迭代新增了 {len(main_truncated_vertices)} 個主要邊的截斷端點")
-                else:
-                    main_truncated_vertices = []  # 確保不是None
-                
-                print(f"當前迭代總共記錄了 {len(main_truncated_vertices)} 個新截斷端點")
-                print(f"歷史累計截斷端點總數: {len(self.last_truncated_vertices)}")
-                
-                # 更新AB - 考慮所有受影響的site點
-                updated = False
-                
-                # 檢查當前A是否在受影響的site點中
-                if current_A in affected_sites:
-                    
-                    # 從受影響的site點中選擇一個新的A（排除當前A）
-                    remaining_sites = affected_sites - {current_A, current_B}
-                    if remaining_sites:
-                        current_A = next(iter(remaining_sites))  # 選擇第一個可用的site
-                        print(f"A 移動到受影響的site: ({current_A.x}, {current_A.y})")
-                        updated = True
-                    else:
-                        print(f"所有受影響的site都是當前A，使用原始邏輯")
-                        if current_A == site1 or current_A == site2:
-                            current_A = site2 if current_A == site1 else site1
-                            print(f"A 移動到: ({current_A.x}, {current_A.y})")
-                            updated = True
-                    
-                    
-                # 檢查當前B是否在受影響的site點中
-                if current_B in affected_sites:
-                    # 從受影響的site點中選擇一個新的B（排除當前B和已選擇的A）
-                    remaining_sites = affected_sites - {current_B, current_A}
-                    if remaining_sites:
-                        current_B = next(iter(remaining_sites))  # 選擇第一個可用的site
-                        print(f"B 移動到受影響的site: ({current_B.x}, {current_B.y})")
-                        updated = True
-                    else:
-                        print(f"所有受影響的site都被使用，使用原始邏輯")
-                        if current_B == site1 or current_B == site2:
-                            current_B = site2 if current_B == site1 else site1
-                            print(f"B 移動到: ({current_B.x}, {current_B.y})")
-                            updated = True
-                
-                # 如果A和B都不在受影響的site中，使用原始邏輯
-                if not updated:
-                    if current_A == site1 or current_A == site2:
-                        current_A = site2 if current_A == site1 else site1
-                        print(f"A 移動到: ({current_A.x}, {current_A.y})")
-                        #updated = True
-                    if current_B == site1 or current_B == site2:
-                        current_B = site2 if current_B == site1 else site1
-                        print(f"B 移動到: ({current_B.x}, {current_B.y})")
-                        
-                    updated = True
-                else:
-                    
-                    # 兩點都不含AB的情況：根據左右半邊決定處理方式
-                    '''
-                    print(f"被碰撞邊的兩點({site1.x}, {site1.y})和({site2.x}, {site2.y})都不含當前AB")
-                    print(f"當前A: ({current_A.x}, {current_A.y}), B: ({current_B.x}, {current_B.y})")
-                    
-                    # 判斷這兩點屬於左半邊還是右半邊
-                    if site1 in left_vd.points and site2 in left_vd.points:
-                        print("兩點屬於左半邊，與B做三點繪製")
-                        # 左半邊：用這兩點與B做三點處理
-                        three_points = [site1, site2, current_B]
-                        three_point_vd = self.build_voronoi_three_points(three_points)
-                        
-                        # 將三點Voronoi的結果合併到當前結果中
-                        if three_point_vd.edges:
-                            merged_vd.edges.extend(three_point_vd.edges)
-                            print(f"左半邊三點處理：添加了{len(three_point_vd.edges)}條邊")
-                        if three_point_vd.vertices:
-                            merged_vd.vertices.extend(three_point_vd.vertices)
-                            print(f"左半邊三點處理：添加了{len(three_point_vd.vertices)}個頂點")
-                            
-                    elif site1 in right_vd.points and site2 in right_vd.points:
-                        print("兩點屬於右半邊，與A做三點繪製")
-                        # 右半邊：用這兩點與A做三點處理
-                        three_points = [site1, site2, current_A]
-                        three_point_vd = self.build_voronoi_three_points(three_points)
-                        
-                        # 將三點Voronoi的結果合併到當前結果中
-                        if three_point_vd.edges:
-                            merged_vd.edges.extend(three_point_vd.edges)
-                            print(f"右半邊三點處理：添加了{len(three_point_vd.edges)}條邊")
-                        if three_point_vd.vertices:
-                            merged_vd.vertices.extend(three_point_vd.vertices)
-                            print(f"右半邊三點處理：添加了{len(three_point_vd.vertices)}個頂點")
-                    else:
-                        print("兩點跨越左右半邊或無法判斷，跳過三點處理")
-                '''
-                if not updated:
-                    print("A和B都不在被碰撞線段中，結束迭代")
-                    break
-                
-                # 重新計算midAB邊緣交點（因為AB改變了）
-                new_midAB_start, new_midAB_end = VoronoiEdge.get_perpendicular_bisector_unlimited(current_A, current_B)
-                # 確保Y小的為起始點，Y大的為結束點
-                if new_midAB_start.y > new_midAB_end.y:
-                    new_midAB_start, new_midAB_end = new_midAB_end, new_midAB_start
-                
-                print(f"重新計算的midAB邊緣交點: 起始Y={new_midAB_start.y:.2f}, 結束Y={new_midAB_end.y:.2f}")
-                
-                # 決定從碰撞點出發的正確方向
-                # 計算從碰撞點到兩個端點的方向向量
-                to_start_y = new_midAB_start.y - new_cross.y  # 到起始點的Y方向
-                to_end_y = new_midAB_end.y - new_cross.y      # 到結束點的Y方向
-                
-                # 選擇往Y較大方向的端點作為目標
-                if to_end_y > to_start_y:
-                    # 朝向end方向（Y較大）
-                    midAB_end = new_midAB_end
-                    print(f"從碰撞點朝向Y較大的端點: ({new_midAB_end.x:.2f}, {new_midAB_end.y:.2f})")
-                else:
-                    # 朝向start方向（Y較大）
-                    midAB_end = new_midAB_start
-                    print(f"從碰撞點朝向Y較大的端點: ({new_midAB_start.x:.2f}, {new_midAB_start.y:.2f})")
-                
-                # 設置下一次起始點
-                current_cross = VoronoiVertex(new_cross.x, new_cross.y)
-                
-            else:
-                # 沒有碰撞，延伸midAB到Y較大的方向（往下）
-                print("無碰撞，延伸midAB到Y較大方向")
-                
-                # 重新計算完整的midAB，確保方向正確
-                temp_start, temp_end = VoronoiEdge.get_perpendicular_bisector_unlimited(current_A, current_B)
-                
-                # 確保從current_cross出發，朝向Y較大的方向
-                # 計算從current_cross到兩個端點的距離和方向
-                to_temp_start_y = temp_start.y - current_cross.y
-                to_temp_end_y = temp_end.y - current_cross.y
-                
-                # 選擇Y方向更大的端點作為目標方向
-                if to_temp_end_y > to_temp_start_y:
-                    target_end = temp_end
-                    print(f"選擇端點: ({temp_end.x:.2f}, {temp_end.y:.2f}), Y方向: {to_temp_end_y:.2f}")
-                else:
-                    target_end = temp_start  
-                    print(f"選擇端點: ({temp_start.x:.2f}, {temp_start.y:.2f}), Y方向: {to_temp_start_y:.2f}")
-                
-                # 如果目標端點的Y值仍然小於或等於起始點，需要延伸
-                if target_end.y <= current_cross.y:
-                    # 計算方向向量並延伸
-                    direction_x = target_end.x - current_cross.x
-                    direction_y = target_end.y - current_cross.y
-                    
-                    # 延伸到確保Y值更大
-                    extend_factor = 2.0  # 延伸倍數
-                    extended_end_x = current_cross.x + direction_x * extend_factor
-                    extended_end_y = current_cross.y + abs(direction_y) * extend_factor  # 確保Y增加
-                    
-                    # 移除畫布限制，允許延伸到畫框外
-                    # 邊可以延伸到畫框外，不需要限制
-                else:
-                    extended_end_x = target_end.x
-                    extended_end_y = target_end.y
-                
-                # 最終檢查：確保結束點Y值 > 開始點Y值
-                if extended_end_y <= current_cross.y:
-                    print(f"警告：結束點Y值({extended_end_y:.2f}) <= 開始點Y值({current_cross.y:.2f})，強制修正")
-                    extended_end_y = current_cross.y + 50  # 至少增加50像素
-                
-                # 創建最終的midAB線段：保留cross往Y較大的部分，截掉往Y較小的部分
-                final_midAB = VoronoiEdge(current_A, current_B, is_hyperplane=True)
-                # cross作為起始點，延伸到Y較大的端點
-                final_midAB.set_start_vertex(current_cross)
-                final_midAB.set_end_vertex(VoronoiVertex(extended_end_x, extended_end_y))
-                merged_vd.edges.append(final_midAB)
-                
-                print(f"最終midAB：保留cross往Y較大部分")
-                print(f"  從cross ({current_cross.x:.2f}, {current_cross.y:.2f}) 到 ({extended_end_x:.2f}, {extended_end_y:.2f})")
-                print(f"  Y方向檢查: 結束點Y({extended_end_y:.2f}) > 開始點Y({current_cross.y:.2f}) = {extended_end_y > current_cross.y}")
-                print(f"  截掉了cross往Y較小的部分")
-                break
-        
-        # 更新調試顯示的A和B
-        self.debug_A = current_A
-        self.debug_B = current_B
-        
-        # 合併結果
-        print(f"開始合併邊...")
-        print(f"合併前 left_vd 邊數: {len(left_vd.edges)}")
-        print(f"合併前 right_vd 邊數: {len(right_vd.edges)}")
-        
-        # 基於邊生命值系統清理死亡的邊
-        all_normal_edges = left_vd.edges + right_vd.edges
-        alive_edges = []
-        dead_edges = []
-        
-        for edge in all_normal_edges:
-            if edge.life > 0:
-                alive_edges.append(edge)
-            else:
-                dead_edges.append(edge)
-        
-        print(f"\n🔄 清理結果: 存活{len(alive_edges)}條，死亡{len(dead_edges)}條")
-        
-        existing_midab_edges = [edge for edge in merged_vd.edges if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane]
-        merged_vd.edges = alive_edges + existing_midab_edges
-        print(f"🎆 最終結果: {len(alive_edges)}條正常邊 + {len(existing_midab_edges)}條midAB邊 = 總共{len(merged_vd.edges)}條邊")
-        
-        # 合併頂點
-        merged_vd.vertices = left_vd.vertices + right_vd.vertices
-        # midAB 的端點也已經在上面處理中加入
-        
-        # 計算合併後的凸包
-        self.debug_merged_hull = self.compute_merged_convex_hull(left_hull, right_hull, A, B)
-        
-        # 記錄merge步驟（如果啟用記錄模式）
-        if record_steps:
-            step_counter[0] += 1
-            step_description = f"Merge step {step_counter[0]}: Merging {len(left_vd.points)} left points with {len(right_vd.points)} right points"
-            
-            # 收集hyperplane邊（midAB組成的線段，橙色）
-            hyperplane_edges = [edge for edge in merged_vd.edges if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane]
-            # 收集非hyperplane邊（原有的邊，藍色）
-            non_hyperplane_edges = [edge for edge in merged_vd.edges if not (hasattr(edge, 'is_hyperplane') and edge.is_hyperplane)]
-            
-            print(f"Step {step_counter[0]} 邊的分類統計:")
-            print(f"  - Hyperplane邊(深紅色+黃色): {len(hyperplane_edges)}")
-            print(f"  - 非Hyperplane邊(藍色): {len(non_hyperplane_edges)}")
-            
-            merge_step = MergeStep(
-                step_number=step_counter[0],
-                description=step_description,
-                voronoi_diagram=merged_vd,
-                left_hull=left_hull,
-                right_hull=right_hull,
-                merged_hull=self.debug_merged_hull,
-                hyperplanes=hyperplane_edges,
-                non_hyperplanes=non_hyperplane_edges,
-                debug_A=A,
-                debug_B=B
-            )
-            if all_steps is not None:
-                all_steps.append(merge_step)
-            else:
-                self.merge_steps.append(merge_step)
-        
-        # 在merge完成後清空歷史截斷端點記錄，但保存一份用於最終檢查
-        self.last_truncated_vertices_for_final_check = self.last_truncated_vertices.copy()  # 保存副本
-        self.last_truncated_vertices.clear()
-        
-        return merged_vd
-    
-    def compute_merged_convex_hull(self, left_hull, right_hull, A, B):
-        """計算左右凸包合併後的大凸包"""
-        # 合併所有點
-        all_points = left_hull + right_hull
-        
-        # 使用Graham scan算法計算合併後的凸包
-        if len(all_points) < 3:
-            return all_points
-        
-        # 尋找最下方的點（Y座標最小，相同時取X座標最小）
-        start_point = min(all_points, key=lambda p: (p.y, p.x))
-        
-        # 按極角排序其餘點
-        def polar_angle(point):
-            import math
-            dx = point.x - start_point.x
-            dy = point.y - start_point.y
-            return math.atan2(dy, dx)
-        
-        def cross_product(o, a, b):
-            return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
-        
-        # 移除起始點並按極角排序
-        other_points = [p for p in all_points if p != start_point]
-        other_points.sort(key=polar_angle)
-        
-        # Graham scan 構建凸包
-        hull = [start_point]
-        for point in other_points:
-            # 移除不在凸包上的點
-            while len(hull) > 1 and cross_product(hull[-2], hull[-1], point) < 0:
-                hull.pop()
-            hull.append(point)
-        
-        print(f"合併後的大凸包:")
-        for i, p in enumerate(hull):
-            print(f"  M{i}: ({p.x}, {p.y})")
-        
-        return hull
-    
-    def get_convex_hull_ordered(self, points, counterclockwise=True, start_point=None):
-        """獲取有序的凸包點，可指定起始點"""
-        if len(points) < 3:
-            return points
-        
-        # 使用 Graham scan 算法
-        def cross_product(o, a, b):
-            return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
-        
-        # 找到最下方的點（y最小，x最小）
-        pivot = min(points, key=lambda p: (p.y, p.x))
-        
-        # 按極角排序
-        import math
-        def polar_angle(p):
-            dx = p.x - pivot.x
-            dy = p.y - pivot.y
-            return math.atan2(dy, dx)
-        
-        sorted_points = sorted([p for p in points if p != pivot], key=polar_angle)
-        hull = [pivot]
-        
-        for point in sorted_points:
-            while len(hull) > 1 and cross_product(hull[-2], hull[-1], point) <= 0:
-                hull.pop()
-            hull.append(point)
-        
-        # 根據需要的順序調整
-        if not counterclockwise:
-            hull.reverse()
-        
-        # 如果指定了起始點，重新排列凸包使其從起始點開始
-        if start_point and start_point in hull:
-            start_index = hull.index(start_point)
-            hull = hull[start_index:] + hull[:start_index]
-        
-        return hull
-    
-    def calculate_slope(self, p1, p2):
-        """計算兩點連線的斜率"""
-        if p2.x == p1.x:
-            return float('inf')  # 垂直線
-        return (p2.y - p1.y) / (p2.x - p1.x)
-    
-    def is_clockwise_rotation(self, old_vector, new_vector):
-        """檢查是否為順時針旋轉（使用外積判斷）
-        
-        Args:
-            old_vector: 原線向量 (x, y)
-            new_vector: 新線向量 (x, y)
-            
-        Returns:
-            bool: 若 "新線向量" 外積 "原線向量" > 0，則為順時鐘
-        """
-        # 計算外積：new_vector × old_vector
-        cross_product = new_vector[0] * old_vector[1] - new_vector[1] * old_vector[0]
-        return cross_product > 0
-    
-    def is_counterclockwise_rotation(self, old_vector, new_vector):
-        """檢查是否為逆時針旋轉（使用外積判斷）
-        
-        Args:
-            old_vector: 原線向量 (x, y)
-            new_vector: 新線向量 (x, y)
-            
-        Returns:
-            bool: 若 "新線向量" 外積 "原線向量" < 0，則為逆時鐘
-        """
-        # 計算外積：new_vector × old_vector
-        cross_product = new_vector[0] * old_vector[1] - new_vector[1] * old_vector[0]
-        return cross_product < 0
-    
-    def is_valid_upper_tangent(self, left_point, right_point, hull_to_check):
-        """
-        檢查left_point到right_point的直線是否為有效的上切線
-        使用向量旋轉方向來判斷，而不是叉積
-        """
-        # 這個函數現在不再使用，保留為備用
-        return True
-    
-    def should_move_A(self, current_A, next_A, B):
-        """
-        判斷是否應該將A從current_A移動到next_A
-        如果 BA × NEW_BA >= 0 則接受新的A
-        """
-        # 計算向量 BA (B -> current_A)
-        BA = (current_A.x - B.x, current_A.y - B.y)
-        # 計算向量 NEW_BA (B -> next_A)
-        NEW_BA = (next_A.x - B.x, next_A.y - B.y)
-        
-        # 計算外積 BA × NEW_BA
-        cross_product = BA[0] * NEW_BA[1] - BA[1] * NEW_BA[0]
-        
-        print(f"A移動判斷: BA向量({B.x},{B.y})->({current_A.x},{current_A.y}) = {BA}")
-        print(f"          NEW_BA向量({B.x},{B.y})->({next_A.x},{next_A.y}) = {NEW_BA}")
-        print(f"          外積 BA × NEW_BA = {cross_product}")
-        
-        if cross_product >= 0:
-            print("外積 >= 0，接受新的A")
-            return True
-        else:
-            print("外積 < 0，維持舊的A")
-            return False
-    
-    def should_move_B(self, A, current_B, next_B):
-        """
-        判斷是否應該將B從current_B移動到next_B
-        如果 NEW_AB × AB >= 0 則接受新的B
-        """
-        # 計算向量 AB (A -> current_B)
-        AB = (current_B.x - A.x, current_B.y - A.y)
-        # 計算向量 NEW_AB (A -> next_B)
-        NEW_AB = (next_B.x - A.x, next_B.y - A.y)
-        
-        # 計算外積 NEW_AB × AB
-        cross_product = NEW_AB[0] * AB[1] - NEW_AB[1] * AB[0]
-        
-        print(f"B移動判斷: AB向量({A.x},{A.y})->({current_B.x},{current_B.y}) = {AB}")
-        print(f"          NEW_AB向量({A.x},{A.y})->({next_B.x},{next_B.y}) = {NEW_AB}")
-        print(f"          外積 NEW_AB × AB = {cross_product}")
-        
-        if cross_product > 0:
-            print("外積 >= 0，接受新的B")
-            return True
-        else:
-            print("外積 < 0，維持舊的B")
-            return False
-    
-    def is_tangent_improving_left(self, current_A, next_A, B, right_hull):
-        """
-        檢查左側點從current_A移到next_A是否改善上切線
-        對於上切線，右側凸包的所有其他點都應該在切線的下方或右側
-        """
-        # 檢查right_hull中的點是否都在next_A-B線段的下方
-        for point in right_hull:
-            if point == B:
-                continue
-                
-            # 計算外積：向量(next_A -> B) × 向量(next_A -> point)
-            # 如果結果 < 0，表示point在next_A-B線段的下方（右側），這是我們要的
-            # 如果結果 > 0，表示point在next_A-B線段的上方（左側），不符合上切線要求
-            cross = self.cross_product(next_A, B, point)
-            
-            # 對於上切線，所有右側凸包的點都應該在切線下方
-            if cross > 0:  # 點在線段上方，不是有效的上切線
-                return False
-                
-        return True
-    
-    def is_tangent_improving_right(self, A, current_B, next_B, left_hull):
-        """
-        檢查右側點從current_B移到next_B是否改善上切線
-        對於上切線，左側凸包的所有其他點都應該在切線的下方或左側
-        """
-        # 檢查left_hull中的點是否都在A-next_B線段的下方
-        for point in left_hull:
-            if point == A:
-                continue
-                
-            # 計算外積：向量(A -> next_B) × 向量(A -> point)  
-            # 如果結果 > 0，表示point在A-next_B線段的下方（左側），這是我們要的
-            # 如果結果 < 0，表示point在A-next_B線段的上方（右側），不符合上切線要求
-            cross = self.cross_product(A, next_B, point)
-            
-            # 對於上切線，所有左側凸包的點都應該在切線下方
-            if cross < 0:  # 點在線段上方，不是有效的上切線
-                return False
-                
-        return True
-    
-    def cross_product(self, p1, p2, p3):
-        """計算向量(p1->p2) × (p1->p3)的外積"""
-        return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x)
-    
-    def check_edge_endpoints_have_voronoi_vertices(self, edge):
-        """檢查邊的端點是否包含VoronoiVertex
-        
-        Args:
-            edge: VoronoiEdge對象
-            
-        Returns:
-            tuple: (start_is_vertex, end_is_vertex, start_vertex, end_vertex)
-                - start_is_vertex: 起始端點是否為VoronoiVertex
-                - end_is_vertex: 結束端點是否為VoronoiVertex
-                - start_vertex: 起始端點的VoronoiVertex對象（如果是的話）
-                - end_vertex: 結束端點的VoronoiVertex對象（如果是的話）
-        """
-        start_is_vertex = isinstance(edge.start_vertex, VoronoiVertex)
-        end_is_vertex = isinstance(edge.end_vertex, VoronoiVertex)
-        
-        start_vertex = edge.start_vertex if start_is_vertex else None
-        end_vertex = edge.end_vertex if end_is_vertex else None
-        
-        print(f"檢查邊端點: start端點是VoronoiVertex={start_is_vertex}, end端點是VoronoiVertex={end_is_vertex}")
-        
-        return start_is_vertex, end_is_vertex, start_vertex, end_vertex
-    
-    def remove_edge_from_vertex(self, vertex, edge):
-        """從VoronoiVertex的edges列表中移除指定的邊
-        
-        Args:
-            vertex: VoronoiVertex對象
-            edge: 要移除的VoronoiEdge對象
-        """
-        if vertex and hasattr(vertex, 'edges') and edge in vertex.edges:
-            vertex.edges.remove(edge)
-            print(f"已從頂點({vertex.x:.2f}, {vertex.y:.2f})的edges列表中移除邊")
-            
-            # 檢查vertex是否成為孤立點（沒有連接的邊）
-            if len(vertex.edges) == 0:
-                print(f"頂點({vertex.x:.2f}, {vertex.y:.2f})已成為孤立點（無連接邊）")
-        else:
-            print(f"頂點({vertex.x:.2f}, {vertex.y:.2f})的edges列表中沒有找到該邊")
-    
-    def cleanup_isolated_vertices(self, voronoi_diagram):
-        """清理沒有連接邊的孤立vertices
-        
-        Args:
-            voronoi_diagram: VoronoiDiagram對象
-        """
-        if not hasattr(voronoi_diagram, 'vertices'):
-            return
-            
-        isolated_vertices = []
-        for vertex in voronoi_diagram.vertices:
-            if isinstance(vertex, VoronoiVertex) and len(vertex.edges) == 0:
-                isolated_vertices.append(vertex)
-        
-        if isolated_vertices:
-            print(f"發現 {len(isolated_vertices)} 個孤立頂點，將被移除")
-            for vertex in isolated_vertices:
-                voronoi_diagram.vertices.remove(vertex)
-                print(f"已移除孤立頂點: ({vertex.x:.2f}, {vertex.y:.2f})")
-    
-    def add_vertex_reference(self, vertex, edge):
-        """添加端點引用
-        
-        Args:
-            vertex: VoronoiVertex 端點
-            edge: VoronoiEdge 引用該端點的邊
-        """
-        if vertex is None:
-            return
-            
-        vertex_key = (round(vertex.x, 2), round(vertex.y, 2))
-        if vertex_key not in self.vertex_references:
-            self.vertex_references[vertex_key] = []
-        
-        if edge not in self.vertex_references[vertex_key]:
-            self.vertex_references[vertex_key].append(edge)
-    
-    def remove_vertex_reference(self, vertex, edge):
-        """移除端點引用
-        
-        Args:
-            vertex: VoronoiVertex 端點
-            edge: VoronoiEdge 不再引用該端點的邊
-        """
-        if vertex is None:
-            return
-            
-        vertex_key = (round(vertex.x, 2), round(vertex.y, 2))
-        if vertex_key in self.vertex_references and edge in self.vertex_references[vertex_key]:
-            self.vertex_references[vertex_key].remove(edge)
-            
-            # 如果沒有邊引用這個端點，清理記錄
-            if not self.vertex_references[vertex_key]:
-                del self.vertex_references[vertex_key]
-    
-    def register_edge_vertices(self, edge):
-        """註冊邊的端點引用
-        
-        Args:
-            edge: VoronoiEdge 要註冊的邊
-        """
-        if edge.start_vertex:
-            self.add_vertex_reference(edge.start_vertex, edge)
-        if edge.end_vertex:
-            self.add_vertex_reference(edge.end_vertex, edge)
-    
-    def update_vertex_life_on_move(self, old_vertex, new_vertex, moved_edge):
-        """當端點被移動時，更新其他引用該端點的邊的生命值
-        
-        Args:
-            old_vertex: VoronoiVertex 舊的端點位置
-            new_vertex: VoronoiVertex 新的端點位置  
-            moved_edge: VoronoiEdge 被截斷移動端點的邊（不扣自己的命）
-        """
-        print(f"\n💝 === 開始生命值更新檢查 === 💝")
-        print(f"👀 被移動的端點: ({old_vertex.x:.2f}, {old_vertex.y:.2f}) -> ({new_vertex.x:.2f}, {new_vertex.y:.2f})")
-        
-        if old_vertex is None:
-            print(f"⚠️ old_vertex 為 None，跳過處理")
-            return
-            
-        # 直接遍歷所有已知的邊，尋找引用舊端點的邊
-        all_edges_to_check = []
-        if hasattr(self, 'left_edges_for_checking'):
-            all_edges_to_check.extend(self.left_edges_for_checking)
-            print(f"👉 檢查左邊列表: {len(self.left_edges_for_checking)} 條邊")
-        else:
-            print(f"⚠️ 沒有 left_edges_for_checking 屬性")
-            
-        if hasattr(self, 'right_edges_for_checking'):
-            all_edges_to_check.extend(self.right_edges_for_checking)
-            print(f"👉 檢查右邊列表: {len(self.right_edges_for_checking)} 條邊")
-        else:
-            print(f"⚠️ 沒有 right_edges_for_checking 屬性")
-        
-        print(f"👀 總共檢查 {len(all_edges_to_check)} 條邊")
-        
-        moved_site1, moved_site2 = moved_edge.get_bisected_points()
-        print(f"🚀 被移動的邊（不扣血）: [{moved_site1.x}, {moved_site1.y}]-[{moved_site2.x}, {moved_site2.y}]")
-        
-        checked_count = 0
-        deducted_count = 0
-        
-        # 增加誤差容忍度 - 從 0.1 增加到 5.0 像素
-        tolerance = 5.0
-        
-        for edge in all_edges_to_check:
-            checked_count += 1
-            if edge == moved_edge:  # 跳過被移動的邊本身
-                print(f"🚀 跳過被移動的邊本身")
-                continue
-                
-            # 檢查是否引用舊端點
-            deduct_life = False
-            match_type = ""
-            
-            if edge.start_vertex:
-                start_distance = ((edge.start_vertex.x - old_vertex.x)**2 + (edge.start_vertex.y - old_vertex.y)**2) ** 0.5
-                if start_distance < tolerance:
-                    deduct_life = True
-                    match_type = "start_vertex"
-                    print(f"🔍 start_vertex 匹配: 距離 {start_distance:.2f} < {tolerance}")
-                    
-            if edge.end_vertex:
-                end_distance = ((edge.end_vertex.x - old_vertex.x)**2 + (edge.end_vertex.y - old_vertex.y)**2) ** 0.5
-                if end_distance < tolerance:
-                    deduct_life = True
-                    match_type = "end_vertex" if not match_type else "both_vertices"
-                    print(f"🔍 end_vertex 匹配: 距離 {end_distance:.2f} < {tolerance}")
-            
-            site1, site2 = edge.get_bisected_points()
-            if deduct_life:
-                deducted_count += 1
-                edge.life -= 1
-                print(f"🩸 扣血！邊 [{site1.x}, {site1.y}]-[{site2.x}, {site2.y}] 的 {match_type} 匹配，生命值: {edge.life + 1} -> {edge.life}")
-            else:
-                # 顯示未匹配的詳細信息
-                start_info = f"({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f})" if edge.start_vertex else "None"
-                end_info = f"({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})" if edge.end_vertex else "None"
-                start_dist = ((edge.start_vertex.x - old_vertex.x)**2 + (edge.start_vertex.y - old_vertex.y)**2) ** 0.5 if edge.start_vertex else float('inf')
-                end_dist = ((edge.end_vertex.x - old_vertex.x)**2 + (edge.end_vertex.y - old_vertex.y)**2) ** 0.5 if edge.end_vertex else float('inf')
-                print(f"🔴 無匹配: 邊 [{site1.x}, {site1.y}]-[{site2.x}, {site2.y}] start={start_info}(距離{start_dist:.2f}) end={end_info}(距離{end_dist:.2f})")
-        
-        print(f"📊 結果: 檢查了 {checked_count} 條邊，扣血了 {deducted_count} 條邊")
-        print(f"💝 === 生命值更新檢查結束 === 💝\n")
-
-    def cleanup_edges_with_truncated_vertices(self, all_edges, truncated_vertices):
-        """基於邊的生命值系統進行清理
-        
-        新版本：直接根據邊的生命值清理，不依賴截斷端點列表
-        
-        Args:
-            all_edges: 所有邊的列表
-            truncated_vertices: 被截斷的端點列表（已不使用，保留參數兼容性）
-        """
-        edges_to_remove = []
-        
-        for edge in all_edges:
-            # 跳過 hyperplane 邊（midAB邊）
-            if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane:
-                continue
-                
-            # 檢查邊的生命值
-            if hasattr(edge, 'life') and edge.life <= 0:
-                site1, site2 = edge.get_bisected_points()
-                print(f"💀 邊死亡: [{site1.x}, {site1.y}]-[{site2.x}, {site2.y}] (生命值: {edge.life})")
-                edges_to_remove.append(edge)
-            elif not hasattr(edge, 'life'):
-                # 為舊邊設置默認生命值
-                edge.life = 2
-        
-        # 移除標記的邊
-        for edge in edges_to_remove:
-            if edge in all_edges:
-                all_edges.remove(edge)
-
-    def record_vertex_truncation(self, intersected_edge, is_start_vertex, cross_point, truncated_vertices):
-        """記錄端點截斷並使用邊生命值系統更新其他邊
-        
-        Args:
-            intersected_edge: 被截斷的邊
-            is_start_vertex: True表示截斷start_vertex，False表示截斷end_vertex  
-            cross_point: 交點
-            truncated_vertices: 記錄被截斷端點的列表（保留用於其他目的）
-        """
-        print(f"\n🔥 *** 開始截斷處理 *** 🔥")
-        intersected_site1, intersected_site2 = intersected_edge.get_bisected_points()
-        print(f"🎯 被截斷的邊: [{intersected_site1.x}, {intersected_site1.y}]-[{intersected_site2.x}, {intersected_site2.y}]")
-        print(f"🎯 截斷類型: {'start_vertex' if is_start_vertex else 'end_vertex'}")
-        print(f"🎯 交點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
-        
-        if is_start_vertex:
-            # 記錄被截斷的原始start_vertex
-            original_vertex = intersected_edge.start_vertex
-            if original_vertex:
-                truncated_vertices.append(Point(original_vertex.x, original_vertex.y))
-                
-                # 使用邊生命值系統：更新其他引用這個端點的邊
-                new_vertex = VoronoiVertex(cross_point.x, cross_point.y)
-                print(f"🔺 start端點移動: ({original_vertex.x:.2f}, {original_vertex.y:.2f}) -> ({new_vertex.x:.2f}, {new_vertex.y:.2f})")
-                self.update_vertex_life_on_move(original_vertex, new_vertex, intersected_edge)
-            else:
-                print(f"⚠️ 警告: 原始start_vertex為None！")
-            
-            # 設置新的start_vertex
-            intersected_edge.start_vertex = VoronoiVertex(cross_point.x, cross_point.y)
-        else:
-            # 記錄被截斷的原始end_vertex
-            original_vertex = intersected_edge.end_vertex
-            if original_vertex:
-                truncated_vertices.append(Point(original_vertex.x, original_vertex.y))
-                
-                # 使用邊生命值系統：更新其他引用這個端點的邊
-                new_vertex = VoronoiVertex(cross_point.x, cross_point.y)
-                print(f"🔺 end端點移動: ({original_vertex.x:.2f}, {original_vertex.y:.2f}) -> ({new_vertex.x:.2f}, {new_vertex.y:.2f})")
-                self.update_vertex_life_on_move(original_vertex, new_vertex, intersected_edge)
-            else:
-                print(f"⚠️ 警告: 原始end_vertex為None！")
-            
-            # 設置新的end_vertex
-            intersected_edge.end_vertex = VoronoiVertex(cross_point.x, cross_point.y)
-        
-        print(f"🔥 *** 截斷處理結束 *** 🔥\n")
-
-    def truncate_intersected_edge(self, intersected_edge, cross_point, all_points, left_points=None, right_points=None, left_hull=None, right_hull=None, all_edges=None, midAB=None):
-        """截斷被碰撞的邊，根據是否為鈍角三角形採用不同邏輯
-        
-        Returns:
-            list: 被截斷改變的端點列表
-        """
-        
-        # 記錄被截斷改變的端點
-        truncated_vertices = []
-        
-        print(f"開始截斷邊，cross_point: ({cross_point.x:.2f}, {cross_point.y:.2f})")
-        
-        # 檢查邊的端點是否包含VoronoiVertex
-        start_is_vertex, end_is_vertex, start_vertex, end_vertex = self.check_edge_endpoints_have_voronoi_vertices(intersected_edge)
-        
-        bisected_points = intersected_edge.get_bisected_points()
-        edge_site1, edge_site2 = bisected_points
-        
-        # 找到與這條邊相關的第三個點來計算外心
-        circumcenter = None
-        third_point = None
-        
-        for point in all_points:
-            if point != edge_site1 and point != edge_site2:
-                # 嘗試計算三點的外心
-                potential_circumcenter = self.calculate_circumcenter(edge_site1, edge_site2, point)
-                if potential_circumcenter:
-                    # 檢查這個外心是否就是被碰撞邊的起點或終點
-                    start_dist = ((potential_circumcenter.x - intersected_edge.start_vertex.x)**2 + 
-                                (potential_circumcenter.y - intersected_edge.start_vertex.y)**2) ** 0.5
-                    end_dist = ((potential_circumcenter.x - intersected_edge.end_vertex.x)**2 + 
-                              (potential_circumcenter.y - intersected_edge.end_vertex.y)**2) ** 0.5
-                    
-                    # 如果外心接近其中一個端點（誤差5像素），則找到正確的外心
-                    if start_dist < 3 or end_dist < 3:
-                        circumcenter = potential_circumcenter
-                        third_point = point
-                        break
-        
-        if circumcenter and third_point:
-            print(f"找到外心: ({circumcenter.x:.2f}, {circumcenter.y:.2f})，第三點: ({third_point.x}, {third_point.y})")
-            
-            # 檢查凸包大小，若凸包數量>3則不須判斷是否鈍角
-            left_hull_size = len(left_hull) if left_hull else 0
-            right_hull_size = len(right_hull) if right_hull else 0
-            
-            print(f"左凸包大小: {left_hull_size}, 右凸包大小: {right_hull_size}")
-            
-            # 註解掉凸包大小>3的特殊處理，統一使用鈍角三角形判斷
-            """
-            # 如果任一凸包大小>3，跳過鈍角三角形的判斷和消邊邏輯
-            if left_hull_size > 3 or right_hull_size > 3:
-                print("凸包大小>3，跳過鈍角三角形判斷，使用A_POINT邏輯")
-                
-                # 使用A_POINT邏輯進行截斷
-                if hasattr(intersected_edge, 'is_cross') and intersected_edge.is_cross:
-                    hyperplane_N = intersected_edge.intersected_by_hyperplane
-                    
-                    # 檢查被碰撞邊的生成點與hyperplane生成點的匹配關係
-                    hyperplane_site1 = hyperplane_N.site1
-                    hyperplane_site2 = hyperplane_N.site2
-                    
-                    A_point = None
-                    
-                    # 檢查edge_site1是否與hyperplane的任一生成點相同
-                    if (edge_site1.x == hyperplane_site1.x and edge_site1.y == hyperplane_site1.y) or \
-                       (edge_site1.x == hyperplane_site2.x and edge_site1.y == hyperplane_site2.y):
-                        A_point = edge_site1
-                        print(f"edge_site1與hyperplane生成點匹配，使用作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
-                    # 檢查edge_site2是否與hyperplane的任一生成點相同
-                    elif (edge_site2.x == hyperplane_site1.x and edge_site2.y == hyperplane_site1.y) or \
-                         (edge_site2.x == hyperplane_site2.x and edge_site2.y == hyperplane_site2.y):
-                        A_point = edge_site2
-                        print(f"edge_site2與hyperplane生成點匹配，使用作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
-                    else:
-                        # 如果都不匹配，使用預設的edge_site1
-                        A_point = edge_site1
-                        print(f"無匹配點，預設使用edge_site1作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
-                    
-                    print(f"hyperplane生成點: site1({hyperplane_site1.x:.2f}, {hyperplane_site1.y:.2f}), site2({hyperplane_site2.x:.2f}, {hyperplane_site2.y:.2f})")
-                    print(f"被碰撞邊生成點: site1({edge_site1.x:.2f}, {edge_site1.y:.2f}), site2({edge_site2.x:.2f}, {edge_site2.y:.2f})")
-                    
-                    # 檢查A點、start_vertex、end_vertex在hyperplane方程式中的值
-                    A_value = intersected_edge.get_point_value_in_hyperplane_equation(A_point, hyperplane_N)
-                    
-                    start_vertex_value = None
-                    end_vertex_value = None
-                    
-                    if intersected_edge.start_vertex:
-                        start_vertex_value = intersected_edge.get_point_value_in_hyperplane_equation(
-                            Point(intersected_edge.start_vertex.x, intersected_edge.start_vertex.y), hyperplane_N)
-                    
-                    if intersected_edge.end_vertex:
-                        end_vertex_value = intersected_edge.get_point_value_in_hyperplane_equation(
-                            Point(intersected_edge.end_vertex.x, intersected_edge.end_vertex.y), hyperplane_N)
-                    
-                    print(f"  A點在hyperplane方程式中的值: {A_value:.6f}")
-                    if start_vertex_value is not None:
-                        print(f"  start_vertex在hyperplane方程式中的值: {start_vertex_value:.6f}")
-                    else:
-                        print("  start_vertex在hyperplane方程式中的值: None")
-                    
-                    if end_vertex_value is not None:
-                        print(f"  end_vertex在hyperplane方程式中的值: {end_vertex_value:.6f}")
-                    else:
-                        print("  end_vertex在hyperplane方程式中的值: None")
-                    
-                    # 檢查start_vertex和A點是否同號
-                    if start_vertex_value is not None:
-                        start_A_same_sign = (start_vertex_value * A_value >= 0)
-                        print(f"  start_vertex與A點同號: {start_A_same_sign}")
-                        
-                        if not start_A_same_sign:
-                            # 不同號，記錄並截斷start_vertex
-                            self.record_vertex_truncation(intersected_edge, True, cross_point, truncated_vertices)
-                    
-                    # 檢查end_vertex和A點是否同號
-                    if end_vertex_value is not None:
-                        end_A_same_sign = (end_vertex_value * A_value >= 0)
-                        print(f"  end_vertex與A點同號: {end_A_same_sign}")
-                        
-                        if not end_A_same_sign:
-                            # 不同號，記錄並截斷end_vertex
-                            self.record_vertex_truncation(intersected_edge, False, cross_point, truncated_vertices)
-                    #外心消線
-                    #if 
-                else:
-                    print("邊沒有碰撞信息，跳過A點基準截斷")
-                
-                return
-            """
-            
-            # 統一進行鈍角三角形判斷（不論凸包大小）
-            print("進行鈍角三角形判斷")
-            is_obtuse = self.is_obtuse_triangle(edge_site1, edge_site2, third_point)
-            obtuse_vertex = None
-            
-            if is_obtuse:
-                obtuse_vertex = self.get_obtuse_vertex(edge_site1, edge_site2, third_point)
-                print(f"發現鈍角三角形，鈍角頂點: ({obtuse_vertex.x}, {obtuse_vertex.y})")
-                
-                # 檢查被碰撞的邊是否包含鈍角頂點
-                contains_obtuse_vertex = (obtuse_vertex == edge_site1 or obtuse_vertex == edge_site2)
-                
-                if contains_obtuse_vertex:
-                    print(f"被碰撞邊包含鈍角頂點({obtuse_vertex.x}, {obtuse_vertex.y})，根據左右半邊決定保留方向")
-                    
-                    # 判斷被碰撞邊屬於左半邊還是右半邊
-                    is_left_edge = False
-                    if left_points and right_points:
-                        # 檢查被碰撞邊的兩個點是否都在左半邊
-                        if edge_site1 in left_points and edge_site2 in left_points:
-                            is_left_edge = True
-                            print("被碰撞邊屬於左半邊圖形")
-                        elif edge_site1 in right_points and edge_site2 in right_points:
-                            is_left_edge = False
-                            print("被碰撞邊屬於右半邊圖形")
-                        else:
-                            print("被碰撞邊跨越左右半邊，使用預設邏輯")
-                    
-                    # 根據左右半邊決定保留方向 - 只進行截斷，不改變方向
-                    start_x = intersected_edge.start_vertex.x
-                    end_x = intersected_edge.end_vertex.x
-                    
-                    print(f"原先邊的方向: start({start_x:.2f}) -> end({end_x:.2f})")
-                    print(f"cross點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
-                    
-                    # 只進行截斷操作：將更靠近分隔線的端點設為cross點
-                    # 不改變邊的整體方向，只是截短它
-                    if is_left_edge:
-                        # 左半邊：截斷超過分隔線的部分
-                        if start_x > end_x:
-                            # start端更接近右側，截斷start端
-                            # 如果start_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                            if start_is_vertex and start_vertex:
-                                self.remove_edge_from_vertex(start_vertex, intersected_edge)
-                            
-                            self.record_vertex_truncation(intersected_edge, True, cross_point, truncated_vertices)
-                            print(f"左半邊：截斷右側端點(start) -> cross點")
-                        else:
-                            # end端更接近右側，截斷end端
-                            # 如果end_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                            if end_is_vertex and end_vertex:
-                                self.remove_edge_from_vertex(end_vertex, intersected_edge)
-                            
-                            self.record_vertex_truncation(intersected_edge, False, cross_point, truncated_vertices)
-                            print(f"左半邊：截斷右側端點(end) -> cross點")
-                    else:
-                        # 右半邊：截斷超過分隔線的部分
-                        if start_x < end_x:
-                            # start端更接近左側，截斷start端
-                            # 如果start_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                            if start_is_vertex and start_vertex:
-                                self.remove_edge_from_vertex(start_vertex, intersected_edge)
-                            
-                            self.record_vertex_truncation(intersected_edge, True, cross_point, truncated_vertices)
-                            print(f"右半邊：截斷左側端點(start) -> cross點")
-                        else:
-                            # end端更接近左側，截斷end端
-                            # 如果end_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                            if end_is_vertex and end_vertex:
-                                self.remove_edge_from_vertex(end_vertex, intersected_edge)
-                            
-                            self.record_vertex_truncation(intersected_edge, False, cross_point, truncated_vertices)
-                            print(f"右半邊：截斷左側端點(end) -> cross點")
-                    # 在這邊額外判斷消除邊的邏輯
-                    # 觀察midAB的X值 鈍角的X值以及外心的X值
-                    midAB_x = cross_point.x  # 使用cross_point的X值作為midAB的參考點
-                    obtuse_x = obtuse_vertex.x
-                    circumcenter_x = circumcenter.x
-                    
-                    print(f"額外X值判斷 - midAB_X: {midAB_x:.2f}, 鈍角_X: {obtuse_x:.2f}, 外心_X: {circumcenter_x:.2f}")
-                    
-                    # 計算 (鈍角X - midABX) * (外心X - midABX)
-                    product = (obtuse_x - midAB_x) * (circumcenter_x - midAB_x)
-                    print(f"(鈍角X - midABX) * (外心X - midABX) = ({obtuse_x:.2f} - {midAB_x:.2f}) * ({circumcenter_x:.2f} - {midAB_x:.2f}) = {product:.2f}")
-                    
-                    if product < 0:
-                        print("乘積 < 0，檢查是否需要消除邊")
-                        
-                        # 檢查get_bisected_points回傳的兩點是否都不含鈍角
-                        bisected_points = intersected_edge.get_bisected_points()
-                        point1, point2 = bisected_points
-                        
-                        print(f"被碰撞邊的兩個生成點: ({point1.x}, {point1.y}) 和 ({point2.x}, {point2.y})")
-                        print(f"鈍角頂點: ({obtuse_vertex.x}, {obtuse_vertex.y})")
-                        
-                        # 檢查兩點是否都不是鈍角頂點
-                        point1_is_obtuse = (point1 == obtuse_vertex)
-                        point2_is_obtuse = (point2 == obtuse_vertex)
-                        
-                        if not point1_is_obtuse and not point2_is_obtuse:
-                            print("兩個生成點都不含鈍角頂點，消除整條邊")
-                            
-                            # 如果start_vertex或end_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                            if start_is_vertex and start_vertex:
-                                self.remove_edge_from_vertex(start_vertex, intersected_edge)
-                                # 記錄被移除的start_vertex
-                                truncated_vertices.append(Point(start_vertex.x, start_vertex.y))
-                            if end_is_vertex and end_vertex:
-                                self.remove_edge_from_vertex(end_vertex, intersected_edge)
-                                # 記錄被移除的end_vertex
-                                truncated_vertices.append(Point(end_vertex.x, end_vertex.y))
-                            
-                            # 將邊的兩個端點都設為cross點，實質上消除整條邊
-                            intersected_edge.set_start_vertex(VoronoiVertex(cross_point.x, cross_point.y))
-                            intersected_edge.set_end_vertex(VoronoiVertex(cross_point.x, cross_point.y))
-                            print(f"已將邊的兩端都設為cross點 ({cross_point.x:.2f}, {cross_point.y:.2f})，實質上消除該邊")
-                            print(f"截斷完成，返回 {len(truncated_vertices)} 個截斷端點")
-                            return truncated_vertices
-                        else:
-                            print("至少有一個生成點含有鈍角頂點，但只進行截斷操作，不消除其他邊")
-                            print("使用正常邏輯：只進行截斷，保持原邊方向")
-                            # 不返回，繼續執行正常的截斷邏輯
-                    else:
-                        print("乘積 > 0，沒事，繼續正常處理")
-
-                    # 繼續執行後續邏輯，不要在這裡返回
-                else:
-                    print("被碰撞邊是鈍角對面的邊，保留cross到其他線的交點（使用正常邏輯）")
-            
-            # 正常情況（銳角三角形或鈍角三角形的非對面邊）：保留外心到cross的部分
-            print("使用正常邏輯：只進行截斷，保持原邊方向")
-            circumcenter_to_start_dist = ((circumcenter.x - intersected_edge.start_vertex.x)**2 + 
-                                        (circumcenter.y - intersected_edge.start_vertex.y)**2) ** 0.5
-            circumcenter_to_end_dist = ((circumcenter.x - intersected_edge.end_vertex.x)**2 + 
-                                      (circumcenter.y - intersected_edge.end_vertex.y)**2) ** 0.5
-            
-            print(f"外心到start距離: {circumcenter_to_start_dist:.2f}, 到end距離: {circumcenter_to_end_dist:.2f}")
-            print(f"原邊方向: start({intersected_edge.start_vertex.x:.2f}, {intersected_edge.start_vertex.y:.2f}) -> end({intersected_edge.end_vertex.x:.2f}, {intersected_edge.end_vertex.y:.2f})")
-            
-            # 只進行截斷操作
-            # 保持原來的邊方向不變
-            
-            # 新增判斷：檢查intersected_edge.site1和site2代入midAB方程式的結果
-            if midAB is not None:
-                # 計算site1和site2代入midAB方程式的值
-                # 使用midAB的方法來計算點在hyperplane方程式中的值
-                site1_value = midAB.get_point_value_in_hyperplane_equation(intersected_edge.site1, midAB)
-                site2_value = midAB.get_point_value_in_hyperplane_equation(intersected_edge.site2, midAB)
-                
-                print(f"midAB方程式檢查: site1值={site1_value:.2f}, site2值={site2_value:.2f}")
-                
-                # 如果同號（乘積>0），則需要改變start或end中與結果不同號的那個
-                if site1_value * site2_value > 0:
-                    print("site1和site2在midAB方程式中同號，檢查start和end端點")
-                    
-                    # 計算start和end端點代入midAB方程式的值
-                    start_value = midAB.get_point_value_in_hyperplane_equation(intersected_edge.start_vertex, midAB)
-                    end_value = midAB.get_point_value_in_hyperplane_equation(intersected_edge.end_vertex, midAB)
-                    
-                    print(f"端點值: start={start_value:.2f}, end={end_value:.2f}")
-                    
-                    # 檢查哪個端點與site1/site2的結果不同號
-                    site_sign = 1 if site1_value > 0 else -1
-                    start_sign = 1 if start_value > 0 else -1
-                    end_sign = 1 if end_value > 0 else -1
-                    
-                    if start_sign != site_sign:
-                        print("將start改為X單號相同的端點")
-                        if start_is_vertex and start_vertex:
-                            self.remove_edge_from_vertex(start_vertex, intersected_edge)
-                        self.record_vertex_truncation(intersected_edge, True, cross_point, truncated_vertices)
-                        # 不要在這裡返回，繼續執行後續邏輯
-                    elif end_sign != site_sign:
-                        print("將end改為X單號相同的端點")
-                        if end_is_vertex and end_vertex:
-                            self.remove_edge_from_vertex(end_vertex, intersected_edge)
-                        self.record_vertex_truncation(intersected_edge, False, cross_point, truncated_vertices)
-                        # 不要在這裡返回，繼續執行後續邏輯
-            
-            #判斷為左子圖或是右子圖
-            #如果被切線的.site屬於左子圖
-            if (intersected_edge.site1 in left_points) and (intersected_edge.site2 in left_points):
-                print("被碰撞邊屬於左半邊圖形")
-                if (intersected_edge.start_vertex.x < intersected_edge.end_vertex.x):
-                    # start端更接近左側，截斷end端
-                    # 如果end_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                    if end_is_vertex and end_vertex:
-                        self.remove_edge_from_vertex(end_vertex, intersected_edge)
-                    
-                    self.record_vertex_truncation(intersected_edge, False, cross_point, truncated_vertices)
-                    print(f"截斷左側端點(end) -> cross點")
-
-                else:
-                    # end端更接近左側，截斷start端
-                    # 如果start_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                    if start_is_vertex and start_vertex:
-                        self.remove_edge_from_vertex(start_vertex, intersected_edge)
-                    
-                    self.record_vertex_truncation(intersected_edge, True, cross_point, truncated_vertices)
-                    print(f"截斷左側端點(start) -> cross點")
-            #如果被切線的.site屬於右子圖
-            elif (intersected_edge.site1 in right_points) and (intersected_edge.site2 in right_points):
-                print("被碰撞邊屬於右半邊圖形")
-                if (intersected_edge.start_vertex.x > intersected_edge.end_vertex.x):
-                    # start端更接近右側，截斷end端
-                    # 如果end_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                    if end_is_vertex and end_vertex:
-                        self.remove_edge_from_vertex(end_vertex, intersected_edge)
-                    
-                    self.record_vertex_truncation(intersected_edge, False, cross_point, truncated_vertices)
-                    print(f"截斷右側端點(end) -> cross點")
-                else:
-                    # end端更接近右側，截斷start端
-                    # 如果start_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                    if start_is_vertex and start_vertex:
-                        self.remove_edge_from_vertex(start_vertex, intersected_edge)
-                    
-                    self.record_vertex_truncation(intersected_edge, True, cross_point, truncated_vertices)
-                    print(f"截斷右側端點(start) -> cross點")
-
-        else:
-            print("警告：找不到外心，使用A點作為基準進行截斷")
-            
-            # 使用A點作為基準的截斷邏輯
-            # 需要從merge_voronoi函數中獲取當前的A點和hyperplane
-            if hasattr(intersected_edge, 'is_cross') and intersected_edge.is_cross:
-                hyperplane_N = intersected_edge.intersected_by_hyperplane
-                cross_point = intersected_edge.cross_point
-                
-                print(f"使用A點基準處理被碰撞的邊: 平分點({edge_site1.x:.2f}, {edge_site1.y:.2f})和({edge_site2.x:.2f}, {edge_site2.y:.2f})")
-                print(f"碰撞點: ({cross_point.x:.2f}, {cross_point.y:.2f})")
-                
-                # 檢查被碰撞邊的生成點與hyperplane生成點的匹配關係
-                # 找出被碰撞邊中與hyperplane相關的點作為A點基準
-                hyperplane_site1 = hyperplane_N.site1
-                hyperplane_site2 = hyperplane_N.site2
-                
-                A_point = None
-                
-                # 檢查edge_site1是否與hyperplane的任一生成點相同
-                if (edge_site1.x == hyperplane_site1.x and edge_site1.y == hyperplane_site1.y) or \
-                   (edge_site1.x == hyperplane_site2.x and edge_site1.y == hyperplane_site2.y):
-                    A_point = edge_site1
-                    print(f"edge_site1與hyperplane生成點匹配，使用作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
-                # 檢查edge_site2是否與hyperplane的任一生成點相同
-                elif (edge_site2.x == hyperplane_site1.x and edge_site2.y == hyperplane_site1.y) or \
-                     (edge_site2.x == hyperplane_site2.x and edge_site2.y == hyperplane_site2.y):
-                    A_point = edge_site2
-                    print(f"edge_site2與hyperplane生成點匹配，使用作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
-                else:
-                    # 如果都不符合，使用預設的edge_site1
-                    A_point = edge_site1
-                    print(f"無匹配點，預設使用edge_site1作為A點基準: ({A_point.x:.2f}, {A_point.y:.2f})")
-                
-                print(f"hyperplane生成點: site1({hyperplane_site1.x:.2f}, {hyperplane_site1.y:.2f}), site2({hyperplane_site2.x:.2f}, {hyperplane_site2.y:.2f})")
-                print(f"被碰撞邊生成點: site1({edge_site1.x:.2f}, {edge_site1.y:.2f}), site2({edge_site2.x:.2f}, {edge_site2.y:.2f})")
-                
-                # 檢查A點、start_vertex、end_vertex在hyperplane方程式中的值
-                A_value = intersected_edge.get_point_value_in_hyperplane_equation(A_point, hyperplane_N)
-                
-                start_vertex_value = None
-                end_vertex_value = None
-                
-                if intersected_edge.start_vertex:
-                    start_vertex_value = intersected_edge.get_point_value_in_hyperplane_equation(
-                        Point(intersected_edge.start_vertex.x, intersected_edge.start_vertex.y), hyperplane_N)
-                
-                if intersected_edge.end_vertex:
-                    end_vertex_value = intersected_edge.get_point_value_in_hyperplane_equation(
-                        Point(intersected_edge.end_vertex.x, intersected_edge.end_vertex.y), hyperplane_N)
-                
-                print(f"  A點在hyperplane方程式中的值: {A_value:.6f}")
-                if start_vertex_value is not None:
-                    print(f"  start_vertex: ({intersected_edge.start_vertex.x:.2f}, {intersected_edge.start_vertex.y:.2f})")
-                    print(f"  start_vertex在hyperplane方程式中的值: {start_vertex_value:.6f}")
-                else:
-                    print("  start_vertex在hyperplane方程式中的值: None")
-                
-                if end_vertex_value is not None:
-                    print(f"  end_vertex: ({intersected_edge.end_vertex.x:.2f}, {intersected_edge.end_vertex.y:.2f})")
-                    print(f"  end_vertex在hyperplane方程式中的值: {end_vertex_value:.6f}")
-                else:
-                    print("  end_vertex在hyperplane方程式中的值: None")
-                
-                # 檢查start_vertex和A點是否同號
-                if start_vertex_value is not None:
-                    start_A_same_sign = (start_vertex_value * A_value >= 0)
-                    print(f"  start_vertex與A點同號: {start_A_same_sign}")
-                    
-                    if not start_A_same_sign:
-                        # 不同號，需要截斷start_vertex端
-                        # 如果start_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                        if start_is_vertex and start_vertex:
-                            self.remove_edge_from_vertex(start_vertex, intersected_edge)
-                        
-                        # 記錄並截斷start_vertex
-                        self.record_vertex_truncation(intersected_edge, True, cross_point, truncated_vertices)
-                
-                # 檢查end_vertex和A點是否同號
-                if end_vertex_value is not None:
-                    end_A_same_sign = (end_vertex_value * A_value >= 0)
-                    print(f"  end_vertex與A點同號: {end_A_same_sign}")
-                    
-                    if not end_A_same_sign:
-                        # 不同號，需要截斷end_vertex端
-                        # 如果end_vertex是VoronoiVertex，先從其edges列表中移除此邊
-                        if end_is_vertex and end_vertex:
-                            self.remove_edge_from_vertex(end_vertex, intersected_edge)
-                        
-                        # 將end_vertex改設為cross點
-                        self.record_vertex_truncation(intersected_edge, False, cross_point, truncated_vertices)
-            else:
-                print("邊沒有碰撞信息，跳過A點基準截斷")
-        #判斷 當一個voronoi vertex.edges 只剩下一條邊時，刪除該邊
-        if all_edges is not None:
-            edges_to_remove = []
-            for edge in all_edges:
-                if edge.start_vertex and edge.end_vertex:
-                    if edge.start_vertex.x == edge.end_vertex.x and edge.start_vertex.y == edge.end_vertex.y:
-                        # 檢查該頂點是否只連接這一條邊
-                        connected_edges = [e for e in all_edges if (e.start_vertex == edge.start_vertex or e.end_vertex == edge.start_vertex)]
-                        if len(connected_edges) <= 1:
-                            edges_to_remove.append(edge)
-                            print(f"剩下一個邊 刪除!!!({edge.start_vertex.x:.2f}, {edge.start_vertex.y:.2f}) -> end({edge.end_vertex.x:.2f}, {edge.end_vertex.y:.2f})，因為該頂點只連接這一條邊")
-            for edge in edges_to_remove:
-                all_edges.remove(edge)
-        
-        # 返回被截斷的端點列表
-        print(f"截斷完成，返回 {len(truncated_vertices)} 個截斷端點")
-        return truncated_vertices
-
-
-    def is_obtuse_triangle(self, p1, p2, p3):
-        """判斷三角形是否為鈍角三角形"""
-        # 計算三邊長的平方
-        a2 = (p2.x - p3.x)**2 + (p2.y - p3.y)**2  # p1 對面的邊
-        b2 = (p1.x - p3.x)**2 + (p1.y - p3.y)**2  # p2 對面的邊  
-        c2 = (p1.x - p2.x)**2 + (p1.y - p2.y)**2  # p3 對面的邊
-        
-        # 計算三角形三個角的餘弦值
-        # 角A在p1，角B在p2，角C在p3
-        cosA = (b2 + c2 - a2) / (2 * (b2 * c2) ** 0.5)
-        cosB = (a2 + c2 - b2) / (2 * (a2 * c2) ** 0.5)  
-        cosC = (a2 + b2 - c2) / (2 * (a2 * b2) ** 0.5)
-        
-        # 如果任何一個餘弦值小於0，則對應角為鈍角
-        return cosA < 0 or cosB < 0 or cosC < 0
-    
-    def get_obtuse_vertex(self, p1, p2, p3):
-        """找出鈍角三角形的鈍角頂點"""
-        # 計算三邊長的平方
-        a2 = (p2.x - p3.x)**2 + (p2.y - p3.y)**2  # p1 對面的邊
-        b2 = (p1.x - p3.x)**2 + (p1.y - p3.y)**2  # p2 對面的邊  
-        c2 = (p1.x - p2.x)**2 + (p1.y - p2.y)**2  # p3 對面的邊
-        
-        # 計算三角形三個角的餘弦值
-        cosA = (b2 + c2 - a2) / (2 * (b2 * c2) ** 0.5)
-        cosB = (a2 + c2 - b2) / (2 * (a2 * c2) ** 0.5)  
-        cosC = (a2 + b2 - c2) / (2 * (a2 * b2) ** 0.5)
-        
-        # 返回餘弦值小於0的頂點（鈍角頂點）
-        if cosA < 0:
-            return p1
-        elif cosB < 0:
-            return p2
-        elif cosC < 0:
-            return p3
-        else:
-            return None  # 不是鈍角三角形
-    
-    def truncate_obtuse_opposite_edge(self, intersected_edge, cross_point, circumcenter):
-        """截斷鈍角對面的邊：消除外心到cross的部分，保留cross到另一端的部分"""
-        circumcenter_to_start_dist = ((circumcenter.x - intersected_edge.start_vertex.x)**2 + 
-                                    (circumcenter.y - intersected_edge.start_vertex.y)**2) ** 0.5
-        circumcenter_to_end_dist = ((circumcenter.x - intersected_edge.end_vertex.x)**2 + 
-                                  (circumcenter.y - intersected_edge.end_vertex.y)**2) ** 0.5
-        
-        # 找到距離外心較近的端點，該端點就是外心的位置
-        if circumcenter_to_start_dist < circumcenter_to_end_dist:
-            # 外心在 start 端，消除從外心（start）到 cross，保留 cross 到 end
-            intersected_edge.set_start_vertex(VoronoiVertex(cross_point.x, cross_point.y))
-            print(f"鈍角對面邊截斷：消除外心到cross，保留cross到另一端 ({intersected_edge.end_vertex.x:.2f}, {intersected_edge.end_vertex.y:.2f})")
-        else:
-            # 外心在 end 端，消除從外心（end）到 cross，保留 start 到 cross
-            intersected_edge.set_end_vertex(VoronoiVertex(cross_point.x, cross_point.y))
-            print(f"鈍角對面邊截斷：消除外心到cross，保留另一端到cross ({intersected_edge.start_vertex.x:.2f}, {intersected_edge.start_vertex.y:.2f})")
-    
-    
-    def cross_product(self, p1, p2, p3):
-        """計算向量(p1->p2) × (p1->p3)的叉積"""
-        return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x)
-    
-    #繪製部分
-    def clip_line_to_canvas(self, x1, y1, x2, y2, canvas_width=600, canvas_height=600):
-        """將線段裁剪到畫布範圍內，使用Cohen-Sutherland算法的簡化版本"""
-        # 定義區域碼
-        INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
-        
-        def get_region_code(x, y):
-            code = INSIDE
-            if x < 0:
-                code |= LEFT
-            elif x > canvas_width:
-                code |= RIGHT
-            if y < 0:
-                code |= TOP
-            elif y > canvas_height:
-                code |= BOTTOM
-            return code
-        
-        code1 = get_region_code(x1, y1)
-        code2 = get_region_code(x2, y2)
-        
-        while True:
-            # 如果兩點都在畫布內
-            if code1 == 0 and code2 == 0:
-                return x1, y1, x2, y2
-            
-            # 如果兩點都在畫布外的同一側
-            if code1 & code2 != 0:
-                return None
-            
-            # 選擇一個在畫布外的點
-            if code1 != 0:
-                code_out = code1
-            else:
-                code_out = code2
-            
-            # 計算交點
-            if code_out & TOP:  # 與上邊界相交
-                x = x1 + (x2 - x1) * (0 - y1) / (y2 - y1)
-                y = 0
-            elif code_out & BOTTOM:  # 與下邊界相交
-                x = x1 + (x2 - x1) * (canvas_height - y1) / (y2 - y1)
-                y = canvas_height
-            elif code_out & RIGHT:  # 與右邊界相交
-                y = y1 + (y2 - y1) * (canvas_width - x1) / (x2 - x1)
-                x = canvas_width
-            elif code_out & LEFT:  # 與左邊界相交
-                y = y1 + (y2 - y1) * (0 - x1) / (x2 - x1)
-                x = 0
-            
-            # 更新點和區域碼
-            if code_out == code1:
-                x1, y1 = x, y
-                code1 = get_region_code(x1, y1)
-            else:
-                x2, y2 = x, y
-                code2 = get_region_code(x2, y2)
-    
-    def draw_voronoi(self):
-        self.canvas.delete("all")  # 清空畫布
-        self.canvas.configure(bg="white")
-        
-        # 如果處於step模式但current_step為-1，恢復正常標題
-        if self.is_step_mode and self.current_step == -1:
-            self.root.title("Voronoi Diagram - Final Complete Result")
-        elif not self.is_step_mode:
-            self.root.title("Voronoi Diagram")
-        
-        # 繪製點
-        for x, y in self.points:
-            self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="black")
-        
-        # 繪製頂點 (circumcenters) - 隱藏以簡化視圖
-        # for vertex in self.vd.vertices:
-        #     self.canvas.create_oval(vertex.x-3, vertex.y-3, vertex.x+3, vertex.y+3, fill="red")
-        
-        # 繪製邊
-        for edge in self.vd.edges:
-            if edge.is_infinite:
-                # 對於無限邊，計算與畫布邊界的交點（簡化處理）
-                if edge.start_vertex:
-                    x1, y1 = edge.start_vertex.x, edge.start_vertex.y
-                    # 根據是否為hyperplane選擇顏色
-                    edge_color = "orange" if edge.is_hyperplane else "blue"
-                    # 假設沿著中垂線方向延伸到邊界，這裡需要根據 site1 和 site2 計算方向
-                    self.canvas.create_line(x1, y1, x1, 0, fill=edge_color)  # 示例，實際需計算
-            elif edge.start_vertex and edge.end_vertex:
-                # 根據是否為hyperplane選擇顏色和線寬
-                if edge.is_hyperplane:
-                    edge_color = "orange"
-                    line_width = 3
-                else:
-                    edge_color = "blue"
-                    line_width = 1
-                
-                # 裁剪線段到畫布範圍內
-                clipped = self.clip_line_to_canvas(
-                    edge.start_vertex.x, edge.start_vertex.y,
-                    edge.end_vertex.x, edge.end_vertex.y
-                )
-                
-                # 如果線段與畫布有交集，則繪製
-                if clipped:
-                    x1, y1, x2, y2 = clipped
-                    self.canvas.create_line(x1, y1, x2, y2, fill=edge_color, width=line_width)
-        
-        # 繪製調試信息：左側凸包（順時針，紅色）
-        # 只在有convex hull數據且用戶選擇顯示時才繪製
-        if self.show_convex_hull.get():
-            if self.is_step_mode:
-                # step模式：檢查當前步驟是否有convex hull數據
-                if self.has_convex_hull_data() and self.debug_left_hull:
-                    for i, point in enumerate(self.debug_left_hull):
-                        # 繪製凸包點（紅色圓圈）
-                        self.canvas.create_oval(point.x-5, point.y-5, point.x+5, point.y+5, 
-                                              outline="red", width=2, fill="")
-                        # 標記順序號
-                        self.canvas.create_text(point.x+10, point.y-10, text=f"L{i}", fill="red", font=("Arial", 8))
-                        # 繪製凸包邊
-                        next_point = self.debug_left_hull[(i+1) % len(self.debug_left_hull)]
-                        self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
-                                              fill="red", width=2, dash=(5, 5))
-            else:
-                # 正常模式：顯示完整結果的convex hull（如果有的話）
-                if self.debug_left_hull:
-                    for i, point in enumerate(self.debug_left_hull):
-                        # 繪製凸包點（紅色圓圈）
-                        self.canvas.create_oval(point.x-5, point.y-5, point.x+5, point.y+5, 
-                                              outline="red", width=2, fill="")
-                        # 標記順序號
-                        self.canvas.create_text(point.x+10, point.y-10, text=f"L{i}", fill="red", font=("Arial", 8))
-                        # 繪製凸包邊
-                        next_point = self.debug_left_hull[(i+1) % len(self.debug_left_hull)]
-                        self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
-                                              fill="red", width=2, dash=(5, 5))
-        
-        # 繪製調試信息：右側凸包（逆時針，綠色）
-        if self.show_convex_hull.get():
-            if self.is_step_mode:
-                # step模式：檢查當前步驟是否有convex hull數據
-                if self.has_convex_hull_data() and self.debug_right_hull:
-                    for i, point in enumerate(self.debug_right_hull):
-                        # 繪製凸包點（綠色圓圈）
-                        self.canvas.create_oval(point.x-5, point.y-5, point.x+5, point.y+5, 
-                                              outline="green", width=2, fill="")
-                        # 標記順序號
-                        self.canvas.create_text(point.x+10, point.y+10, text=f"R{i}", fill="green", font=("Arial", 8))
-                        # 繪製凸包邊
-                        next_point = self.debug_right_hull[(i+1) % len(self.debug_right_hull)]
-                        self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
-                                              fill="green", width=2, dash=(5, 5))
-            else:
-                # 正常模式：顯示完整結果的convex hull（如果有的話）
-                if self.debug_right_hull:
-                    for i, point in enumerate(self.debug_right_hull):
-                        # 繪製凸包點（綠色圓圈）
-                        self.canvas.create_oval(point.x-5, point.y-5, point.x+5, point.y+5, 
-                                              outline="green", width=2, fill="")
-                        # 標記順序號
-                        self.canvas.create_text(point.x+10, point.y+10, text=f"R{i}", fill="green", font=("Arial", 8))
-                        # 繪製凸包邊
-                        next_point = self.debug_right_hull[(i+1) % len(self.debug_right_hull)]
-                        self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
-                                              fill="green", width=2, dash=(5, 5))
-        
-        # 繪製A和B點（特別標記） - 已隱藏
-        # if self.debug_A:
-        #     self.canvas.create_oval(self.debug_A.x-8, self.debug_A.y-8, 
-        #                           self.debug_A.x+8, self.debug_A.y+8, 
-        #                           outline="purple", width=3, fill="yellow")
-        #     self.canvas.create_text(self.debug_A.x, self.debug_A.y-15, text="A", 
-        #                           fill="purple", font=("Arial", 12, "bold"))
-        
-        # if self.debug_B:
-        #     self.canvas.create_oval(self.debug_B.x-8, self.debug_B.y-8, 
-        #                           self.debug_B.x+8, self.debug_B.y+8, 
-        #                           outline="purple", width=3, fill="yellow")
-        #     self.canvas.create_text(self.debug_B.x, self.debug_B.y-15, text="B", 
-        #                           fill="purple", font=("Arial", 12, "bold"))
-
-        # 繪製合併後的大凸包（紫色，較粗線條）
-        if self.show_merged_hull.get() and self.debug_merged_hull:
-            for i, point in enumerate(self.debug_merged_hull):
-                # 繪製合併凸包點（紫色圓圈）
-                self.canvas.create_oval(point.x-6, point.y-6, point.x+6, point.y+6, 
-                                      outline="purple", width=3, fill="")
-                # 標記順序號
-                self.canvas.create_text(point.x-15, point.y-15, text=f"M{i}", fill="purple", font=("Arial", 10, "bold"))
-                # 繪製合併凸包邊
-                next_point = self.debug_merged_hull[(i+1) % len(self.debug_merged_hull)]
-                self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
-                                      fill="purple", width=3, dash=(3, 3))
-
-    #照步驟執行   
     def step_voronoi(self):
-        """Step by Step按鈕：第一次點擊執行算法並顯示第一步，後續點擊顯示下一步"""
+        """Step by Step 模式 - 逐步展示計算過程"""
         if not self.points:
-            messagebox.showwarning("Warning", "No points to process")
+            messagebox.showwarning("警告", "請先添加點或載入測試資料")
             return
         
-        # 檢查點是否發生變化
-        points_changed = self.points != self.previous_step_points
-        
-        # 如果點沒有變化且已經計算過步驟，直接顯示
-        if (not points_changed and hasattr(self, 'steps_calculated') and 
-            self.steps_calculated and self.merge_steps):
-            if not self.is_step_mode:
-                # 從第一步開始顯示
+        # 第一次執行或點集改變：計算所有步驟
+        if self.points != self.previous_points or not self.steps_calculated:
+            try:
+                # 初始化
+                self.vd.clear()
+                for x, y in self.points:
+                    self.vd.add_site(x, y)
+                
+                print(f"\n===== 執行 Step by Step - 計算所有步驟 =====")
+                print(f"點數: {len(self.points)}")
+                
+                # 背後執行完整計算並記錄步驟
+                self.compute_voronoi_divide_conquer()
+                
+                # 設置狀態
+                self.previous_points = self.points.copy()
+                self.steps_calculated = True
                 self.is_step_mode = True
                 self.current_step = 0
-                self.show_step(0)
-                #print(f"Points unchanged, showing first step (total {len(self.merge_steps)} steps)")
-            else:
-                # 已經在step模式中，顯示下一步
-                if self.current_step < len(self.merge_steps) - 1:
-                    self.current_step += 1
-                    self.show_step(self.current_step)
-                else:
-                    # 已經到最後一步，顯示完成圖案
-                    self.current_step = -1
-                    self.is_step_mode = False
-                    self.draw_voronoi()
-                    self.root.title("Voronoi Diagram - Complete")
-            return
-        
-        # 如果點發生變化或未計算過，重新計算
-        if points_changed or not hasattr(self, 'steps_calculated') or not self.steps_calculated:
-            # 清空之前的資料
-            self.vd.edges.clear()
-            self.vd.vertices.clear() 
-            self.vd.point_to_edges.clear()
-            self.merge_steps.clear()
-            self.current_step = -1
-            self.is_step_mode = True
-            self.steps_calculated = False  # 標記為未計算
-            
-            # 保存當前的points
-            self.previous_step_points = self.points[:]  # 複製列表
-            
-            # 執行算法並記錄步驟
-            points = [Point(x, y) for x, y in self.points]
-            all_steps = []  # 用於收集所有步驟
-            self.vd = self.build_voronoi(points, record_steps=True, all_steps=all_steps)
-            
-            # 將all_steps中的步驟轉移到merge_steps
-            self.merge_steps = all_steps
-            
-            # 標記步驟已計算完成
-            self.steps_calculated = True
-            
-            # 如果有步驟記錄，顯示第一步
-            if self.merge_steps:
-                self.current_step = 0
-                self.show_step(0)
-                if points_changed:
-                    print(f"Points changed, automatically showing first step (total {len(self.merge_steps)} steps)")
-            else:
-                # 沒有merge步驟（點數過少），直接顯示結果
-                self.is_step_mode = False
-                self.draw_voronoi()
+                
+                print(f"計算完成！共 {len(self.vd.merge_steps)} 個步驟")
+                
+            except Exception as e:
+                messagebox.showerror("錯誤", f"計算過程發生錯誤：{str(e)}")
+                print(f"錯誤詳情：{e}")
+                import traceback
+                traceback.print_exc()
+                return
         else:
-            # 已經在step模式中，顯示下一步
-            if self.current_step < len(self.merge_steps) - 1:
+            # 前進到下一步
+            if self.current_step < len(self.vd.merge_steps) - 1:
                 self.current_step += 1
-                self.show_step(self.current_step)
+                print(f"\n前進到步驟 {self.current_step + 1}/{len(self.vd.merge_steps)}")
             else:
-                # 已經到最後一步，顯示完成圖案
-                self.current_step = -1
-                self.is_step_mode = False
-                self.draw_voronoi()
-                self.root.title("Voronoi Diagram - Complete")
-                
-                # 列出所有邊的頂點值
-                self.list_all_edge_vertices()
-                
-                # 檢查並移除重複邊
-                print(f"\\n🔍 檢查重複邊...")
-                duplicate_count = self.remove_duplicate_edges()
-                
-                if duplicate_count > 0:
-                    print(f"\\n重新輸出去除重複邊後的邊列表:")
-                    self.list_all_edge_vertices()
-
+                # 已經是最後一步，不顯示提示視窗
+                print(f"\n已經是最後一步 ({len(self.vd.merge_steps)}/{len(self.vd.merge_steps)})")
+                return
+        
+        # 繪製當前步驟
+        self.draw_current_step()
     
-    def show_step(self, step_index):
-        """顯示指定步驟的狀態 - 不修改主要的 self.vd"""
-        if step_index < 0 or step_index >= len(self.merge_steps):
+    def draw_current_step(self):
+        """繪製當前步驟的狀態 - 用顏色區分不同狀態的點"""
+        self.canvas.delete("all")
+        
+        if not self.vd.merge_steps or self.current_step < 0:
             return
         
-        step = self.merge_steps[step_index]
+        step = self.vd.merge_steps[self.current_step]
         
-        # 檢查步驟類型
-        if isinstance(step, BuildStep):
-            # 處理構建步驟
-            self.show_build_step(step, step_index)
-        elif isinstance(step, MergeStep):
-            # 處理合併步驟
-            self.show_merge_step(step, step_index)
+        # 獲取當前正在處理的點集 - 使用列表而非集合
+        current_processing = []
+        if step.left_sites:
+            current_processing.extend(step.left_sites)
+        if step.right_sites:
+            current_processing.extend(step.right_sites)
         
-        # 更新步驟顯示
-        self.update_step_display()
-    
-    def show_build_step(self, step, step_index):
-        """顯示構建步驟 - 不修改主要的 self.vd"""
-        # 清空調試變量
-        self.debug_left_hull = []
-        self.debug_right_hull = []
-        self.debug_merged_hull = []
-        self.debug_A = None
-        self.debug_B = None
-        
-        # 注意：不修改 self.last_truncated_vertices，那是主要執行的狀態
-        
-        # 重要：暫時替換 self.vd 來顯示該步驟，但在完成後需要恢復
-        original_vd = self.vd
-        self.vd = step.voronoi_diagram  # 暫時替換
-        
-        # 重新繪製
-        self.draw_build_step_voronoi(step)
-        
-        # 恢復原始的 vd
-        self.vd = original_vd
-        
-        # 顯示步驟資訊
-        side_text = "左子圖" if step.side == "left" else "右子圖" if step.side == "right" else ""
-        self.root.title(f"Voronoi Diagram - {step.description} ({step_index + 1}/{len(self.merge_steps)})")
-    
-    def show_merge_step(self, step, step_index):
-        """顯示合併步驟 - 不修改主要的 self.vd"""
-        # 更新調試變量以顯示該步驟的狀態（增加安全檢查）
-        self.debug_left_hull = step.left_hull if hasattr(step, 'left_hull') else []
-        self.debug_right_hull = step.right_hull if hasattr(step, 'right_hull') else []
-        self.debug_merged_hull = step.merged_hull if hasattr(step, 'merged_hull') else []
-        self.debug_A = step.debug_A if hasattr(step, 'debug_A') else None
-        self.debug_B = step.debug_B if hasattr(step, 'debug_B') else None
-        
-        # 重要：暫時替換 self.vd 來顯示該步驟，但在完成後需要恢復
-        original_vd = self.vd
-        self.vd = step.voronoi_diagram  # 暫時替換
-        
-        # 重新繪製
-        self.draw_step_voronoi(step)
-        
-        # 恢復原始的 vd
-        self.vd = original_vd
-        
-        # 顯示步驟資訊
-        self.root.title(f"Voronoi Diagram - {step.description} ({step_index + 1}/{len(self.merge_steps)})")
-    
-    def has_convex_hull_data(self):
-        """檢查當前步驟是否有convex hull數據"""
-        if not self.is_step_mode or not hasattr(self, 'merge_steps') or not self.merge_steps:
-            return False
-        
-        if not (0 <= self.current_step < len(self.merge_steps)):
-            return False
-        
-        current_step = self.merge_steps[self.current_step]
-        
-        # 檢查是否為MergeStep且有convex hull數據
-        if isinstance(current_step, MergeStep):
-            has_left = hasattr(current_step, 'left_hull') and current_step.left_hull
-            has_right = hasattr(current_step, 'right_hull') and current_step.right_hull
-            return has_left or has_right
-        
-        # BuildStep沒有convex hull數據
-        return False
-    
-    def has_convex_hull_data(self):
-        """檢查當前步驟是否有convex hull數據"""
-        if not self.is_step_mode or not hasattr(self, 'merge_steps') or not self.merge_steps:
-            return False
-        
-        if not (0 <= self.current_step < len(self.merge_steps)):
-            return False
-        
-        current_step = self.merge_steps[self.current_step]
-        
-        # 檢查是否為MergeStep且有convex hull數據
-        if isinstance(current_step, MergeStep):
-            has_left = hasattr(current_step, 'left_hull') and current_step.left_hull
-            has_right = hasattr(current_step, 'right_hull') and current_step.right_hull
-            return has_left or has_right
-        
-        # BuildStep沒有convex hull數據
-        return False
-    
-    def draw_build_step_voronoi(self, step):
-        """繪製構建步驟的voronoi圖"""
-        self.canvas.delete("all")
-        
-        # 繪製該子圖的點（高亮顯示）
-        for point in step.points:
-            if step.side == "left":
-                self.canvas.create_oval(point.x-5, point.y-5, point.x+5, point.y+5, fill="red", outline="darkred", width=2)
-            elif step.side == "right":
-                self.canvas.create_oval(point.x-5, point.y-5, point.x+5, point.y+5, fill="green", outline="darkgreen", width=2)
+        # 繪製所有站點 - 根據狀態使用不同顏色
+        for site in self.vd.sites:
+            if site in current_processing:
+                # 正在處理的點 - 紅色（突出顯示）
+                color = "red"
+                radius = 4
             else:
-                # 基礎步驟（兩點或三點）：使用特殊顏色
-                self.canvas.create_oval(point.x-6, point.y-6, point.x+6, point.y+6, fill="gold", outline="orange", width=3)
+                # 其他點 - 灰色（已處理或未處理）
+                color = "gray"
+                radius = 3
+            
+            self.canvas.create_oval(
+                site.x-radius, site.y-radius, 
+                site.x+radius, site.y+radius,
+                fill=color, outline=color
+            )
         
-        # 繪製其他點（淡化顯示）
-        for x, y in self.points:
-            point_obj = Point(x, y)
-            if point_obj not in step.points:
-                self.canvas.create_oval(x-2, y-2, x+2, y+2, fill="lightgray")
+        # 繪製邊：如果有 left_edges 和 right_edges，使用它們；否則根據步驟類型決定
+        has_step_edges = (step.left_edges or step.right_edges)
         
-        # 檢查是否為基礎步驟（兩兩取中垂線或計算外心）
-        is_basic_step = ("兩點取中垂線" in step.description or 
-                        "三點取中垂線" in step.description or 
-                        "計算外心" in step.description or
-                        "原始兩兩中垂線" in step.description or
-                        "共線處理" in step.description)
-        
-        if is_basic_step:
-            # 基礎步驟：顯示說明文字
-            if "兩點取中垂線" in step.description:
-                # 畫兩點之間的連線（虛線）
-                p1, p2 = step.points[0], step.points[1]
-                self.canvas.create_line(p1.x, p1.y, p2.x, p2.y, fill="gray", width=2, dash=(5, 5))
-                # 畫中點
-                mid_x, mid_y = (p1.x + p2.x) / 2, (p1.y + p2.y) / 2
-                self.canvas.create_oval(mid_x-4, mid_y-4, mid_x+4, mid_y+4, fill="purple", outline="black", width=2)
-                # 添加說明文字
-                self.canvas.create_text(mid_x, mid_y-20, text="中點", fill="purple", font=("Arial", 10, "bold"))
-            elif "三點取中垂線" in step.description:
-                # 畫三角形（虛線）
-                p1, p2, p3 = step.points[0], step.points[1], step.points[2]
-                self.canvas.create_line(p1.x, p1.y, p2.x, p2.y, fill="gray", width=2, dash=(5, 5))
-                self.canvas.create_line(p2.x, p2.y, p3.x, p3.y, fill="gray", width=2, dash=(5, 5))
-                self.canvas.create_line(p3.x, p3.y, p1.x, p1.y, fill="gray", width=2, dash=(5, 5))
-                # 畫三個中點
-                mid1_x, mid1_y = (p1.x + p2.x) / 2, (p1.y + p2.y) / 2
-                mid2_x, mid2_y = (p2.x + p3.x) / 2, (p2.y + p3.y) / 2
-                mid3_x, mid3_y = (p3.x + p1.x) / 2, (p3.y + p1.y) / 2
-                self.canvas.create_oval(mid1_x-3, mid1_y-3, mid1_x+3, mid1_y+3, fill="purple", outline="black", width=1)
-                self.canvas.create_oval(mid2_x-3, mid2_y-3, mid2_x+3, mid2_y+3, fill="purple", outline="black", width=1)
-                self.canvas.create_oval(mid3_x-3, mid3_y-3, mid3_x+3, mid3_y+3, fill="purple", outline="black", width=1)
-            elif "計算外心" in step.description:
-                # 顯示外心（如果有的話）
-                if step.voronoi_diagram.vertices:
-                    for vertex in step.voronoi_diagram.vertices:
-                        self.canvas.create_oval(vertex.x-8, vertex.y-8, vertex.x+8, vertex.y+8, 
-                                              fill="cyan", outline="blue", width=3)
-                        self.canvas.create_text(vertex.x, vertex.y-20, text="外心", fill="blue", font=("Arial", 12, "bold"))
-            elif "原始兩兩中垂線" in step.description:
-                # 顯示三角形（實線）
-                p1, p2, p3 = step.points[0], step.points[1], step.points[2]
-                self.canvas.create_line(p1.x, p1.y, p2.x, p2.y, fill="darkgray", width=2)
-                self.canvas.create_line(p2.x, p2.y, p3.x, p3.y, fill="darkgray", width=2)
-                self.canvas.create_line(p3.x, p3.y, p1.x, p1.y, fill="darkgray", width=2)
-                
-                # 顯示外心（如果有的話）
-                if step.voronoi_diagram.vertices:
-                    for vertex in step.voronoi_diagram.vertices:
-                        if not hasattr(vertex, 'is_original_bisector'):  # 只顯示外心，不顯示中垂線端點
-                            self.canvas.create_oval(vertex.x-4, vertex.y-4, vertex.x+4, vertex.y+4, 
-                                                  fill="lightcyan", outline="blue", width=1)
-                            self.canvas.create_text(vertex.x, vertex.y-12, text="外心", fill="blue", font=("Arial", 9))
-                
-                # 添加說明文字
-                center_x = (p1.x + p2.x + p3.x) / 3
-                center_y = (p1.y + p2.y + p3.y) / 3
-                self.canvas.create_text(center_x, center_y+40, text="原始中垂線", 
-                                      fill="darkred", font=("Arial", 12, "bold"))
-        
-        # 繪製該步驟的voronoi邊
-        for edge in step.voronoi_diagram.edges:
-            if edge.start_vertex and edge.end_vertex:  # 確保邊有端點
-                if is_basic_step:
-                    if "原始兩兩中垂線" in step.description:
-                        # 原始中垂線：只使用黃色細線
-                        clipped = self.clip_line_to_canvas(
-                            edge.start_vertex.x, edge.start_vertex.y,
-                            edge.end_vertex.x, edge.end_vertex.y
-                        )
-                        if clipped:
-                            x1, y1, x2, y2 = clipped
-                            self.canvas.create_line(x1, y1, x2, y2, fill="orange", width=2)
-                    else:
-                        # 其他基礎步驟的邊用洋紅色
-                        self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
-                                              edge.end_vertex.x, edge.end_vertex.y, 
-                                              fill="magenta", width=3)
-                else:
-                    # 構建步驟的邊用藍色
-                    self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
-                                          edge.end_vertex.x, edge.end_vertex.y, 
-                                          fill="blue", width=2)
-    
-    def draw_step_voronoi(self, step):
-        """繪製特定步驟的voronoi圖"""
-        self.canvas.delete("all")
-        
-        # 繪製輸入點
-        for x, y in self.points:
-            self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="black")
-        
-        # 判斷是否為倒數第二步（最後一條 hyperplane 的步驟）
-        is_second_last_step = (hasattr(self, 'merge_steps') and self.merge_steps and
-                              hasattr(self, 'current_step') and 
-                              self.current_step == len(self.merge_steps) - 2)
-        
-        if is_second_last_step:
-            print(f"🌟 正在顯示倒數第二步：最後一條 hyperplane 的步驟")
-        
-        # 繪製該步驟的voronoi邊
-        for edge in step.voronoi_diagram.edges:
-            if edge.start_vertex and edge.end_vertex:  # 確保邊有端點
-                if hasattr(edge, 'is_hyperplane') and edge.is_hyperplane:
-                    if is_second_last_step:
-                        # 倒數第二步：最後一條 hyperplane 畫得非常醒目
-                        # 使用更粗的線條、更鮮艷的顏色和閃爍效果
-                        self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
-                                              edge.end_vertex.x, edge.end_vertex.y, 
-                                              fill="red", width=6)  # 紅色，更粗
-                        # 添加外圍效果
-                        self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
-                                              edge.end_vertex.x, edge.end_vertex.y, 
-                                              fill="yellow", width=3)  # 黃色內芯
-                        # 添加端點標記
-                        self.canvas.create_oval(edge.start_vertex.x-8, edge.start_vertex.y-8, 
-                                              edge.start_vertex.x+8, edge.start_vertex.y+8, 
-                                              fill="red", outline="yellow", width=3)
-                        self.canvas.create_oval(edge.end_vertex.x-8, edge.end_vertex.y-8, 
-                                              edge.end_vertex.x+8, edge.end_vertex.y+8, 
-                                              fill="red", outline="yellow", width=3)
-                        # 添加文字標記（先畫背景框，再畫文字）
-                        mid_x = (edge.start_vertex.x + edge.end_vertex.x) / 2
-                        mid_y = (edge.start_vertex.y + edge.end_vertex.y) / 2
-                        # 畫背景框
-                        self.canvas.create_rectangle(mid_x-80, mid_y-30, mid_x+80, mid_y-10, 
-                                                   fill="yellow", outline="red", width=2)
-                        # 畫文字
-                        self.canvas.create_text(mid_x, mid_y-20, text="最後一條 Hyperplane", 
-                                              fill="red", font=("Arial", 12, "bold"))
-                    else:
-                        # 一般的 hyperplane：背景深紅色粗線 + 前景黃色細線
-                        # 背景：深紅色粗線（線寬 5）
-                        self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
-                                              edge.end_vertex.x, edge.end_vertex.y, 
-                                              fill="darkred", width=5)
-                        # 前景：黃色細線（線寬 3）
-                        self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
-                                              edge.end_vertex.x, edge.end_vertex.y, 
-                                              fill="yellow", width=3)
-                else:
-                    # 一般voronoi邊用藍色
-                    self.canvas.create_line(edge.start_vertex.x, edge.start_vertex.y, 
-                                          edge.end_vertex.x, edge.end_vertex.y, 
-                                          fill="blue", width=1)
-        
-        # 繪製左右凸包（如果啟用顯示）
+        if has_step_edges:
+            # 繪製左半邊的邊（藍色）- 裁剪到畫布
+            for edge in step.left_edges:
+                if edge.start and edge.end:
+                    clipped = clip_line_to_canvas(edge.start.x, edge.start.y, edge.end.x, edge.end.y)
+                    if clipped:
+                        x1, y1, x2, y2 = clipped
+                        # hyperplane 用橘色，其他用藍色
+                        color = "orange" if edge.is_hyperplane else "blue"
+                        width = 2
+                        self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width)
+            
+            # 繪製右半邊的邊（綠色或橘色）- 裁剪到畫布
+            for edge in step.right_edges:
+                if edge.start and edge.end:
+                    clipped = clip_line_to_canvas(edge.start.x, edge.start.y, edge.end.x, edge.end.y)
+                    if clipped:
+                        x1, y1, x2, y2 = clipped
+                        # hyperplane 用橘色，其他用綠色
+                        color = "orange" if edge.is_hyperplane else "green"
+                        width = 2
+                        self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width)
+        else:
+            # 沒有 step-specific 的邊
+            # 只有在「合併」步驟時才繪製所有累積的邊，分割步驟不繪製任何邊
+            if "合併" in step.description:
+                for edge in self.vd.edges:
+                    if edge.start and edge.end:
+                        clipped = clip_line_to_canvas(edge.start.x, edge.start.y, edge.end.x, edge.end.y)
+                    if clipped:
+                        x1, y1, x2, y2 = clipped
+                        # hyperplane 用橘色實線，其他邊用藍色細線
+                        color = "orange" if edge.is_hyperplane else "blue"
+                        width = 2 if edge.is_hyperplane else 1
+                        self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width)        # 繪製 Convex Hull（如果選項開啟）
         if self.show_convex_hull.get():
-            # 繪製左凸包（紅色）
-            if step.left_hull:
-                for i, point in enumerate(step.left_hull):
-                    self.canvas.create_oval(point.x-4, point.y-4, point.x+4, point.y+4, 
-                                          outline="red", width=2, fill="")
-                    self.canvas.create_text(point.x-10, point.y-10, text=f"L{i}", fill="red", font=("Arial", 8))
-                    next_point = step.left_hull[(i+1) % len(step.left_hull)]
-                    self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
-                                          fill="red", width=2, dash=(5, 5))
+            # 繪製左側凸包（藍色虛線）
+            if step.left_hull and step.left_hull.edges:
+                for p1, p2 in step.left_hull.edges:
+                    self.canvas.create_line(
+                        p1.x, p1.y, p2.x, p2.y, 
+                        fill="cyan", width=2, dash=(4, 2)
+                    )
             
-            # 繪製右凸包（綠色）
-            if step.right_hull:
-                for i, point in enumerate(step.right_hull):
-                    self.canvas.create_oval(point.x-4, point.y-4, point.x+4, point.y+4, 
-                                          outline="green", width=2, fill="")
-                    self.canvas.create_text(point.x+10, point.y-10, text=f"R{i}", fill="green", font=("Arial", 8))
-                    next_point = step.right_hull[(i+1) % len(step.right_hull)]
-                    self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
-                                          fill="green", width=2, dash=(5, 5))
+            # 繪製右側凸包（綠色虛線）
+            if step.right_hull and step.right_hull.edges:
+                for p1, p2 in step.right_hull.edges:
+                    self.canvas.create_line(
+                        p1.x, p1.y, p2.x, p2.y, 
+                        fill="lime", width=2, dash=(4, 2)
+                    )
         
-        # 繪製合併後的大凸包（如果啟用顯示）
-        if self.show_merged_hull.get() and step.merged_hull:
-            for i, point in enumerate(step.merged_hull):
-                self.canvas.create_oval(point.x-6, point.y-6, point.x+6, point.y+6, 
-                                      outline="purple", width=3, fill="")
-                self.canvas.create_text(point.x-15, point.y-15, text=f"M{i}", fill="purple", font=("Arial", 10, "bold"))
-                next_point = step.merged_hull[(i+1) % len(step.merged_hull)]
-                self.canvas.create_line(point.x, point.y, next_point.x, next_point.y, 
-                                      fill="purple", width=3, dash=(3, 3))
+        # 繪製合併後的凸包（如果選項開啟）
+        if self.show_merged_hull.get():
+            if step.merged_hull and step.merged_hull.edges:
+                for p1, p2 in step.merged_hull.edges:
+                    self.canvas.create_line(
+                        p1.x, p1.y, p2.x, p2.y, 
+                        fill="purple", width=3, dash=(6, 3)
+                    )
+        
+        # 顯示步驟資訊
+        print(f"步驟 {self.current_step + 1}/{len(self.vd.merge_steps)}: {step.description}")
     
-
-    #讀檔
-    def load_file(self):
-        file_path = filedialog.askopenfilename()
-        if not file_path:
-            return
-        self.groups = []
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to read file: {e}")
-            return
-        
-        i = 0
-        while i < len(lines):
-            line = lines[i].strip()
-            if line=="0":
-                break  # 如果遇到 "0" 則停止讀取
-            if not line or line.startswith("#"):
-                i += 1
-                continue
-            try:
-                count = int(line)
-                i += 1
-            except ValueError:
-                messagebox.showwarning("Warning", "Invalid point count at line {i+1}")
-                i += 1
-                continue
-            
-            group = []
-            for _ in range(count):
-                if i >= len(lines):
-                    messagebox.showwarning("Warning", f"File ended prematurely, expected {count} points")
-                    break
-                parts = lines[i].strip().split()
-                if len(parts) == 2:
-                    try:
-                        x, y = int(parts[0]), int(parts[1])
-                        if 0 <= x <= 600 and 0 <= y <= 600:  # 檢查座標是否在畫布範圍內
-                            group.append((x, y))
-                        else:
-                            messagebox.showwarning("Warning", f"Point ({parts[0]}, {parts[1]}) at line {i+1} out of canvas bounds")
-                    except ValueError:
-                        messagebox.showwarning("Warning", f"Invalid coordinates at line {i+1}")
-                i += 1
-            if group:  # 僅加入非空的 group
-                self.groups.append(group)
-            else:
-                messagebox.showwarning("Warning", f"Empty group skipped at line {i-count}")
-        
-        if not self.groups:
-            messagebox.showerror("Error", "No valid groups loaded from file")
-            self.points = []
-            self.current_group = 0
-            return
-        
-        self.current_group = 0
-        self.show_group()
-
-    def show_group(self):
-        self.clear_points()
-        #print(f"Current group: {self.current_group}, Total groups: {len(self.groups)}")  # debug
-        if 0 <= self.current_group < len(self.groups):
-            self.points = self.groups[self.current_group][:]  # 複製列表以避免意外修改
-            print(f"Points in current group: {self.points}")  # debug
-            for x, y in self.points:
-                self.canvas.create_oval(x-3, y-3, x+3, y+3, fill="black")
-                self.vd.add_point(Point(x, y))  # 添加到 self.vd
-        else:
-            #print("Invalid group index or no groups available.")
-            self.points = []
-            messagebox.showinfo("Info", "No points to display in current group")
-
-    def next_group(self):
-        if self.current_group + 1 < len(self.groups):
-            self.current_group += 1
-            self.show_group()
-        else:
-            messagebox.showinfo("Info", "No more groups to display")
-
-    def prev_group(self):
-        if self.current_group > 0:
-            self.current_group -= 1
-            self.show_group()
-        else:
-            messagebox.showinfo("Info", "Already at the first group")
-
-    def clear_points(self):
-        self.vd.points.clear()       # 清空點
-        self.vd.edges.clear()        # 清空邊
-        self.vd.vertices.clear()     # 清空頂點
-        self.vd.point_to_edges.clear()  # 清空點到邊的映射
-        self.points.clear()
-        # 清空調試信息
-        self.debug_left_hull.clear()
-        self.debug_right_hull.clear()
-        self.debug_A = None
-        self.debug_B = None
+    def draw_voronoi_result(self):
+        """繪製最終的 Voronoi Diagram 結果"""
         self.canvas.delete("all")
-        self.canvas.configure(bg="white")
         
-        # 清空step相關變數
-        self.merge_steps.clear()
-        self.current_step = -1
-        self.is_step_mode = False
-        self.previous_step_points = []
-        self.steps_calculated = False
+        # 繪製所有邊（裁剪到畫布範圍）
+        for edge in self.vd.edges:
+            if edge.start and edge.end:
+                # 使用線段裁剪算法
+                clipped = clip_line_to_canvas(edge.start.x, edge.start.y, edge.end.x, edge.end.y)
+                if clipped:
+                    x1, y1, x2, y2 = clipped
+                    
+                    color = "orange" if edge.is_hyperplane else "blue"
+                    width = 2 if edge.is_hyperplane else 1
+                    
+                    self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width)
         
-        # 清空run相關變數
-        self.previous_run_points = []
-        self.run_executed = False
-        self.last_truncated_vertices = []
+        # 繪製 Convex Hull（如果選項開啟且有最後一步）
+        if len(self.vd.merge_steps) > 0:
+            last_step = self.vd.merge_steps[-1]
+            
+            if self.show_convex_hull.get():
+                # 繪製左側凸包（青色虛線）
+                if last_step.left_hull and last_step.left_hull.edges:
+                    for p1, p2 in last_step.left_hull.edges:
+                        self.canvas.create_line(
+                            p1.x, p1.y, p2.x, p2.y, 
+                            fill="cyan", width=2, dash=(4, 2)
+                        )
+                
+                # 繪製右側凸包（萊姆色虛線）
+                if last_step.right_hull and last_step.right_hull.edges:
+                    for p1, p2 in last_step.right_hull.edges:
+                        self.canvas.create_line(
+                            p1.x, p1.y, p2.x, p2.y, 
+                            fill="lime", width=2, dash=(4, 2)
+                        )
+            
+            # 繪製合併後的凸包（如果選項開啟）
+            if self.show_merged_hull.get():
+                if last_step.merged_hull and last_step.merged_hull.edges:
+                    for p1, p2 in last_step.merged_hull.edges:
+                        self.canvas.create_line(
+                            p1.x, p1.y, p2.x, p2.y, 
+                            fill="purple", width=3, dash=(6, 3)
+                        )
         
-        print(f"🧹 清空所有點和執行狀態")
+        # 繪製所有 Voronoi 頂點（只繪製在畫布內的）
+        for vertex in self.vd.vertices:
+            if 0 <= vertex.x <= CANVAS_WIDTH and 0 <= vertex.y <= CANVAS_HEIGHT:
+                self.canvas.create_oval(
+                    vertex.x-2, vertex.y-2, vertex.x+2, vertex.y+2,
+                    fill="orange", outline="orange"
+                )
         
-        # 更新顯示
+        # 繪製所有站點（原始輸入點）- 黑色
+        for site in self.vd.sites:
+            self.canvas.create_oval(
+                site.x-3, site.y-3, site.x+3, site.y+3,
+                fill="black", outline="black"
+            )
+        
         self.update_stats_display()
-        self.update_step_display()
+    
+    def refresh_display(self):
+        """刷新顯示（用於切換顯示選項時）"""
+        if self.is_step_mode and self.current_step >= 0:
+            self.draw_current_step()
+        else:
+            # 如果還沒有點擊 Step by Step 或 Run（沒有進行計算）
+            if not self.steps_calculated and len(self.vd.merge_steps) == 0:
+                self.canvas.delete("all")
+                # 繪製站點：優先使用 self.points，其次使用 self.vd.sites
+                if self.points:
+                    for x, y in self.points:
+                        self.canvas.create_oval(
+                            x-3, y-3, x+3, y+3,
+                            fill="black", outline="black"
+                        )
+                else:
+                    for site in self.vd.sites:
+                        self.canvas.create_oval(
+                            site.x-3, site.y-3, site.x+3, site.y+3,
+                            fill="black", outline="black"
+                        )
+            else:
+                # 已經計算過 Voronoi，顯示完整結果
+                self.draw_voronoi_result()
+    
+    def compute_voronoi_divide_conquer(self):
+        """使用 Divide and Conquer 方法計算 Voronoi Diagram"""
+        if len(self.vd.sites) == 0:
+            return
+        
+        # 按 x 座標排序站點
+        sorted_sites = sorted(self.vd.sites, key=lambda s: (s.x, s.y))
+        print(f"開始 Divide and Conquer，站點數: {len(sorted_sites)}")
+        
+        # 遞迴分治
+        self._divide_conquer_recursive(sorted_sites, 0)
+    
+    def _divide_conquer_recursive(self, sites, depth):
+        """
+        遞迴的分治方法
+        sites: 當前要處理的站點列表
+        depth: 遞迴深度（用於記錄步驟）
+        """
+        n = len(sites)
+        
+        # 基本情況：1個點
+        if n == 1:
+            print(f"  {'  '*depth}[警告] 出現單一點的情況，這不應該發生！")
+            messagebox.showwarning("警告", 
+                f"遞迴過程中出現單一點，請檢查點分割邏輯\n點座標: ({sites[0].x:.1f}, {sites[0].y:.1f})")
+            
+            # 計算單點的凸包
+            left_hull = compute_convex_hull([])
+            right_hull = compute_convex_hull([sites[0]])
+            merged_hull = compute_convex_hull([sites[0]])
+            
+            step = MergeStep(
+                step_id=len(self.vd.merge_steps),
+                description=f"[異常] 單一點 ({sites[0].x:.1f}, {sites[0].y:.1f})",
+                left_sites=[],
+                right_sites=[sites[0]],
+                left_hull=left_hull,
+                right_hull=right_hull,
+                merged_hull=merged_hull
+            )
+            self.vd.merge_steps.append(step)
+            return
+        
+        # 基本情況：2個點
+        elif n == 2:
+            self._handle_two_points(sites[0], sites[1], depth)
+        
+        # 基本情況：3個點
+        elif n == 3:
+            self._handle_three_points(sites[0], sites[1], sites[2], depth)
+        
+        # 遞迴情況：大於3個點
+        else:
+            # 分割：找中間點
+            mid = n // 2
+            left_sites = sites[:mid]
+            right_sites = sites[mid:]
+            
+            # 計算分割時的凸包
+            left_hull = compute_convex_hull(left_sites)
+            right_hull = compute_convex_hull(right_sites)
+            merged_hull = compute_convex_hull(sites)
+            
+            # 記錄分割步驟
+            step = MergeStep(
+                step_id=len(self.vd.merge_steps),
+                description=f"{'  '*depth}分割：左 {len(left_sites)} 點，右 {len(right_sites)} 點",
+                left_sites=left_sites,
+                right_sites=right_sites,
+                left_hull=left_hull,
+                right_hull=right_hull,
+                merged_hull=merged_hull
+            )
+            self.vd.merge_steps.append(step)
+            print(f"{'  '*depth}分割：左 {len(left_sites)} 點，右 {len(right_sites)} 點")
+            
+            # 步驟1: 處理左半邊，記錄左半邊的結果
+            print(f"{'  '*depth}步驟1: 處理左半邊")
+            self._divide_conquer_recursive(left_sites, depth + 1)
+            
+            # 收集左半邊處理完成後的所有邊（深拷貝以保持狀態）
+            left_edges_after = []
+            for edge in self.vd.edges:
+                if edge.is_hyperplane:
+                    continue  # 跳過hyperplane邊
+                # 檢查邊是否屬於左半邊的站點
+                if edge.site1 in left_sites and edge.site2 in left_sites:
+                    left_edges_after.append(edge.copy_snapshot())
+            
+            # 記錄左半邊完成的步驟
+            left_hull_after = compute_convex_hull(left_sites)
+            step_left = MergeStep(
+                step_id=len(self.vd.merge_steps),
+                description=f"{'  '*depth}左半邊完成：{len(left_sites)} 點處理完畢（外心截斷）",
+                left_sites=left_sites,
+                right_sites=[],
+                left_hull=left_hull_after,
+                right_hull=compute_convex_hull([]),
+                merged_hull=left_hull_after,
+                left_edges=left_edges_after,
+                right_edges=[]
+            )
+            self.vd.merge_steps.append(step_left)
+            
+            # 步驟2: 處理右半邊，記錄右半邊的結果
+            print(f"{'  '*depth}步驟2: 處理右半邊")
+            self._divide_conquer_recursive(right_sites, depth + 1)
+            
+            # 收集右半邊處理完成後的所有邊（深拷貝以保持狀態）
+            right_edges_after = []
+            for edge in self.vd.edges:
+                if edge.is_hyperplane:
+                    continue  # 跳過hyperplane邊
+                # 檢查邊是否屬於右半邊的站點
+                if edge.site1 in right_sites and edge.site2 in right_sites:
+                    right_edges_after.append(edge.copy_snapshot())
+            
+            # 記錄右半邊完成的步驟
+            right_hull_after = compute_convex_hull(right_sites)
+            step_right = MergeStep(
+                step_id=len(self.vd.merge_steps),
+                description=f"{'  '*depth}右半邊完成：{len(right_sites)} 點處理完畢（外心截斷）",
+                left_sites=[],
+                right_sites=right_sites,
+                left_hull=compute_convex_hull([]),
+                right_hull=right_hull_after,
+                merged_hull=right_hull_after,
+                left_edges=[],
+                right_edges=right_edges_after
+            )
+            self.vd.merge_steps.append(step_right)
+            
+            # 步驟3a: 顯示左右半邊外心截斷完成後的結果（用顏色區分）
+            print(f"{'  '*depth}步驟3a: 顯示左右半邊外心截斷結果")
+            all_left_edges = [e.copy_snapshot() for e in left_edges_after]
+            all_right_edges = [e.copy_snapshot() for e in right_edges_after]
+            
+            step_combined = MergeStep(
+                step_id=len(self.vd.merge_steps),
+                description=f"{'  '*depth}合併展示：左右半邊外心截斷結果（合併前）",
+                left_sites=left_sites,
+                right_sites=right_sites,
+                left_hull=compute_convex_hull(left_sites),
+                right_hull=compute_convex_hull(right_sites),
+                merged_hull=compute_convex_hull(sites),
+                left_edges=all_left_edges,
+                right_edges=all_right_edges
+            )
+            self.vd.merge_steps.append(step_combined)
+            
+            # 步驟3b: 合併左右兩半，計算 hyperplane
+            print(f"{'  '*depth}步驟3b: 計算和繪製hyperplane")
+            # 重新計算合併時的凸包（因為遞迴後可能有變化）
+            left_hull = compute_convex_hull(left_sites)
+            right_hull = compute_convex_hull(right_sites)
+            merged_hull = compute_convex_hull(sites)
+            
+            print(f"{'  '*depth}合併：左 {len(left_sites)} 點與右 {len(right_sites)} 點")
+            
+            # 計算 hyperplane 的端點
+            hyperplane_points = compute_hyperplane_points(left_sites, right_sites, merged_hull)
+            hyperplane = None
+            
+            if hyperplane_points:
+                point1, point2 = hyperplane_points
+                print(f"{'  '*depth}  計算 hyperplane: ({point1.x:.1f}, {point1.y:.1f}) - ({point2.x:.1f}, {point2.y:.1f})")
+                
+                # 創建 hyperplane 邊（中垂線）
+                edge = self.vd.create_edge(point1, point2)
+                edge.is_hyperplane = True
+                
+                # 計算中點
+                mid_x = (point1.x + point2.x) / 2.0
+                mid_y = (point1.y + point2.y) / 2.0
+                
+                # 計算中垂線的方向向量（垂直於兩點連線）
+                dx = point2.x - point1.x
+                dy = point2.y - point1.y
+                
+                # 垂直方向（旋轉90度）
+                direction_x = -dy
+                direction_y = dx
+                
+                # 正規化方向向量
+                length = math.sqrt(direction_x**2 + direction_y**2)
+                if length > 1e-9:
+                    direction_x /= length
+                    direction_y /= length
+                
+                # 延伸到邊界
+                x1, y1, x2, y2 = extend_line_to_boundary(mid_x, mid_y, direction_x, direction_y)
+                
+                # 創建端點（臨時的，用於截斷計算）
+                from datastructer import Point
+                temp_start = Point(x1, y1)
+                temp_end = Point(x2, y2)
+                
+                # 收集當前合併層級的邊（只包含左半邊和右半邊的邊，包括 hyperplane）
+                # 篩選條件：edge 的兩個站點都在 left_sites 或都在 right_sites 中
+                current_level_edges = []
+                for e in self.vd.edges:
+                    # 檢查是否屬於左半邊
+                    if e.site1 in left_sites and e.site2 in left_sites:
+                        current_level_edges.append(e)
+                    # 檢查是否屬於右半邊
+                    elif e.site1 in right_sites and e.site2 in right_sites:
+                        current_level_edges.append(e)
+                    # 檢查是否為跨越左右的 hyperplane（之前更深層產生的）
+                    elif e.is_hyperplane and ((e.site1 in left_sites and e.site2 in right_sites) or 
+                                               (e.site1 in right_sites and e.site2 in left_sites)):
+                        current_level_edges.append(e)
+                
+                print(f"{'  '*depth}  -> 當前層級共有 {len(current_level_edges)} 條邊可能與 hyperplane 碰撞")
+                
+                # 截斷 hyperplane 找到第一個碰撞點
+                new_end, intersected_edges, all_intersected_sites = truncate_hyperplane(
+                    temp_start, temp_end, current_level_edges, left_sites, right_sites, depth
+                )
+                
+                # 確定第一段 hyperplane 的起始點和結束點
+                if new_end:
+                    # 找到交點，使用截斷後的結束點
+                    final_start = temp_start
+                    final_end = new_end
+                    
+                    print(f"{'  '*depth}  -> 第一段 Hyperplane 從 ({final_start.x:.1f}, {final_start.y:.1f}) 到 ({final_end.x:.1f}, {final_end.y:.1f})")
+                    
+                    # 創建第一段的頂點
+                    start_vertex = self.vd.create_vertex(final_start.x, final_start.y, sites=[point1, point2])
+                    end_vertex = self.vd.create_vertex(final_end.x, final_end.y, sites=[point1, point2])
+                    
+                    # 設置第一段邊的端點
+                    edge.start = start_vertex
+                    edge.end = end_vertex
+                    
+                    # 繼續從碰撞點繪製後續的 hyperplane
+                    if all_intersected_sites and final_end.y <= CANVAS_HEIGHT:
+                        print(f"{'  '*depth}  -> 繼續繪製 hyperplane，從碰撞點開始")
+                        print(f"{'  '*depth}  -> 初始產生點: ({point1.x:.1f},{point1.y:.1f}) 和 ({point2.x:.1f},{point2.y:.1f})")
+                        print(f"{'  '*depth}  -> 碰撞涉及 {len(all_intersected_sites)} 個站點:")
+                        for site in all_intersected_sites:
+                            print(f"{'  '*depth}     站點: ({site.x:.1f},{site.y:.1f})")
+                        
+                        # 從所有涉及的站點中，排除當前 hyperplane 的產生點
+                        remaining_sites = [s for s in all_intersected_sites if s != point1 and s != point2]
+                        
+                        print(f"{'  '*depth}  -> 排除初始產生點後，剩餘 {len(remaining_sites)} 個站點")
+                        
+                        if len(remaining_sites) == 1:
+                            # 單一新站點，找出共同站點
+                            new_site = remaining_sites[0]
+                            common_sites = [s for s in all_intersected_sites if s == point1 or s == point2]
+                            
+                            if len(common_sites) == 1:
+                                common = common_sites[0]
+                                other_from_hyperplane = point1 if common == point2 else point2
+                                
+                                print(f"{'  '*depth}  -> 共同站點: ({common.x:.1f},{common.y:.1f})")
+                                print(f"{'  '*depth}  -> 下一段將由 ({other_from_hyperplane.x:.1f},{other_from_hyperplane.y:.1f}) 和 ({new_site.x:.1f},{new_site.y:.1f}) 產生")
+                                
+                                # 調用繼續繪製函數
+                                from datastructer import Point
+                                additional_edges = continue_hyperplane_from_intersection(
+                                    self.vd, 
+                                    Point(final_end.x, final_end.y),  # 從碰撞點開始
+                                    (other_from_hyperplane, new_site),  # 產生點
+                                    left_sites, 
+                                    right_sites, 
+                                    depth
+                                )
+                                
+                                print(f"{'  '*depth}  -> 額外創建了 {len(additional_edges)} 段 hyperplane")
+                            else:
+                                print(f"{'  '*depth}  -> 錯誤：找到 {len(common_sites)} 個共同站點（應為1個）")
+                                
+                        elif len(remaining_sites) == 2:
+                            # 兩個新站點，這是重疊中垂線的情況
+                            site1, site2 = remaining_sites[0], remaining_sites[1]
+                            
+                            print(f"{'  '*depth}  -> 檢測到重疊中垂線！")
+                            print(f"{'  '*depth}  -> 下一段將由 ({site1.x:.1f},{site1.y:.1f}) 和 ({site2.x:.1f},{site2.y:.1f}) 產生")
+                            
+                            # 調用繼續繪製函數
+                            from datastructer import Point
+                            additional_edges = continue_hyperplane_from_intersection(
+                                self.vd, 
+                                Point(final_end.x, final_end.y),  # 從碰撞點開始
+                                (site1, site2),  # 產生點
+                                left_sites, 
+                                right_sites, 
+                                depth
+                            )
+                            
+                            print(f"{'  '*depth}  -> 額外創建了 {len(additional_edges)} 段 hyperplane")
+                        else:
+                            print(f"{'  '*depth}  -> 警告：有 {len(remaining_sites)} 個新站點，無法自動處理")
+                    
+                else:
+                    # 沒找到交點，使用原始端點
+                    final_start = temp_start
+                    final_end = temp_end
+                    
+                    # 創建最終的頂點
+                    start_vertex = self.vd.create_vertex(final_start.x, final_start.y, sites=[point1, point2])
+                    end_vertex = self.vd.create_vertex(final_end.x, final_end.y, sites=[point1, point2])
+                    
+                    # 設置邊的端點
+                    edge.start = start_vertex
+                    edge.end = end_vertex
+                    
+                    print(f"{'  '*depth}  -> 最終 Hyperplane 從 ({final_start.x:.1f}, {final_start.y:.1f}) 到 ({final_end.x:.1f}, {final_end.y:.1f})")
+            else:
+                print(f"{'  '*depth}  -> 無法計算 hyperplane")
+            
+            # 收集當前所有邊的最終狀態（包括被hyperplane截斷後的邊）
+            final_left_edges = []
+            final_right_edges = []
+            hyperplane_edges = []
+            
+            for edge in self.vd.edges:
+                if edge.is_hyperplane:
+                    hyperplane_edges.append(edge.copy_snapshot())
+                elif edge.site1 in left_sites and edge.site2 in left_sites:
+                    final_left_edges.append(edge.copy_snapshot())
+                elif edge.site1 in right_sites and edge.site2 in right_sites:
+                    final_right_edges.append(edge.copy_snapshot())
+            
+            merge_step = MergeStep(
+                step_id=len(self.vd.merge_steps),
+                description=f"{'  '*depth}合併完成：hyperplane 繪製並截斷完畢",
+                left_sites=left_sites,
+                right_sites=right_sites,
+                left_hull=left_hull,
+                right_hull=right_hull,
+                merged_hull=merged_hull,
+                left_edges=final_left_edges,
+                right_edges=final_right_edges + hyperplane_edges
+            )
+            self.vd.merge_steps.append(merge_step)
+    
+    def _handle_two_points(self, site1, site2, depth):
+        """處理兩個點的情況：創建中垂線"""
+        print(f"{'  '*depth}處理兩點: ({site1.x:.1f}, {site1.y:.1f}) 和 ({site2.x:.1f}, {site2.y:.1f})")
+        
+        # 創建中垂線
+        edge = self.vd.create_edge(site1, site2)
+        
+        # 計算中點
+        mid_x, mid_y = edge.get_midpoint()
+        
+        # 計算中垂線的方向向量（垂直於兩點連線）
+        dx = site2.x - site1.x
+        dy = site2.y - site1.y
+        
+        # 垂直方向（旋轉90度）
+        direction_x = -dy
+        direction_y = dx
+        
+        # 正規化方向向量
+        length = math.sqrt(direction_x**2 + direction_y**2)
+        if length > 1e-9:
+            direction_x /= length
+            direction_y /= length
+        
+        # 延伸到邊界
+        x1, y1, x2, y2 = extend_line_to_boundary(mid_x, mid_y, direction_x, direction_y)
+        
+        # 創建端點
+        start_vertex = self.vd.create_vertex(x1, y1, sites=[site1, site2])
+        end_vertex = self.vd.create_vertex(x2, y2, sites=[site1, site2])
+        
+        # 設置邊的端點
+        edge.start = start_vertex
+        edge.end = end_vertex
+        
+        # 不記錄步驟，因為這個中間狀態會被後續的 hyperplane 截斷
+        # 最終狀態會在父層的「步驟1完成」或「步驟2完成」中被記錄
+        
+        print(f"{'  '*depth}  -> 中垂線從 ({x1:.1f}, {y1:.1f}) 到 ({x2:.1f}, {y2:.1f})")
+    
+    def _handle_three_points(self, site1, site2, site3, depth):
+        """處理三個點的情況"""
+        print(f"{'  '*depth}處理三點: ({site1.x:.1f}, {site1.y:.1f}), ({site2.x:.1f}, {site2.y:.1f}), ({site3.x:.1f}, {site3.y:.1f})")
+        
+        # 檢查是否共線
+        if are_collinear(site1, site2, site3):
+            self._handle_three_collinear_points(site1, site2, site3, depth)
+        else:
+            # 判斷三角形類型：直角 > 鈍角 > 銳角
+            is_right = is_right_triangle(site1, site2, site3)
+            is_obtuse = is_obtuse_triangle(site1, site2, site3)
+            
+            if is_right:
+                print(f"{'  '*depth}  -> 直角三角形")
+                self._handle_right_triangle(site1, site2, site3, depth)
+            elif is_obtuse:
+                print(f"{'  '*depth}  -> 鈍角三角形")
+                self._handle_obtuse_triangle(site1, site2, site3, depth)
+            else:
+                print(f"{'  '*depth}  -> 銳角三角形")
+                self._handle_acute_triangle(site1, site2, site3, depth)
+    
+    def _handle_three_collinear_points(self, site1, site2, site3, depth):
+        """處理三點共線的情況"""
+        print(f"{'  '*depth}  -> 三點共線")
+        
+        # 找出最遠的兩點和中間點
+        points = [(site1, 0), (site2, 1), (site3, 2)]
+        
+        # 按 x 座標排序（如果x相同則按y）
+        points.sort(key=lambda p: (p[0].x, p[0].y))
+        
+        leftmost = points[0][0]
+        middle = points[1][0]
+        rightmost = points[2][0]
+        
+        print(f"{'  '*depth}  -> 最左: ({leftmost.x:.1f}, {leftmost.y:.1f})")
+        print(f"{'  '*depth}  -> 中間: ({middle.x:.1f}, {middle.y:.1f})")
+        print(f"{'  '*depth}  -> 最右: ({rightmost.x:.1f}, {rightmost.y:.1f})")
+        
+        # 創建兩條中垂線：leftmost-middle 和 middle-rightmost
+        edges = []
+        
+        # 第一條：leftmost 和 middle
+        edge1 = self._create_perpendicular_bisector(leftmost, middle, depth)
+        edges.append(edge1)
+        
+        # 第二條：middle 和 rightmost
+        edge2 = self._create_perpendicular_bisector(middle, rightmost, depth)
+        edges.append(edge2)
+        
+        # 記錄步驟
+        step = MergeStep(
+            step_id=len(self.vd.merge_steps),
+            description=f"{'  '*depth}三點共線：創建兩條平行中垂線",
+            left_sites=[leftmost],
+            right_sites=[middle, rightmost],
+            new_edges=set(edges),
+            left_edges=[edge1],
+            right_edges=[edge2]
+        )
+        self.vd.merge_steps.append(step)
+    
+    def _handle_acute_triangle(self, site1, site2, site3, depth):
+        """處理銳角三角形：外心在三角形內部 - 使用外心截斷中垂線"""
+        # 計算外心
+        circumcenter = calculate_circumcenter(site1, site2, site3)
+        
+        if circumcenter is None:
+            print(f"{'  '*depth}  -> 錯誤：無法計算外心")
+            return
+        
+        cx, cy = circumcenter
+        print(f"{'  '*depth}  -> 外心: ({cx:.1f}, {cy:.1f})")
+        
+        # 創建外心頂點
+        center_vertex = self.vd.create_vertex(cx, cy, sites=[site1, site2, site3])
+        
+        # 創建三條完整的中垂線（未截斷）
+        edges = []
+        
+        # 中垂線 1: site1-site2
+        edge1 = self._create_perpendicular_bisector(site1, site2, depth)
+        edges.append(edge1)
+        
+        # 中垂線 2: site2-site3
+        edge2 = self._create_perpendicular_bisector(site2, site3, depth)
+        edges.append(edge2)
+        
+        # 中垂線 3: site1-site3
+        edge3 = self._create_perpendicular_bisector(site1, site3, depth)
+        edges.append(edge3)
+        
+        # 步驟1: 記錄未截斷的狀態（使用快照複製）
+        edges_snapshot = [e.copy_snapshot() for e in edges]
+        step1 = MergeStep(
+            step_id=len(self.vd.merge_steps),
+            description=f"{'  '*depth}銳角三角形：創建三條完整中垂線（未截斷）",
+            left_sites=[site1],
+            right_sites=[site2, site3],
+            new_edges=set(edges_snapshot),
+            left_edges=edges_snapshot[:1],
+            right_edges=edges_snapshot[1:]
+        )
+        self.vd.merge_steps.append(step1)
+        
+        # 進行截斷
+        self._truncate_edge_with_circumcenter(edge1, center_vertex, depth)
+        self._truncate_edge_with_circumcenter(edge2, center_vertex, depth)
+        self._truncate_edge_with_circumcenter(edge3, center_vertex, depth)
+        
+        # 步驟2: 記錄截斷後的狀態（使用快照複製，避免後續修改影響）
+        edges_snapshot_after = [e.copy_snapshot() for e in edges]
+        step2 = MergeStep(
+            step_id=len(self.vd.merge_steps),
+            description=f"{'  '*depth}銳角三角形：用外心截斷中垂線",
+            left_sites=[site1],
+            right_sites=[site2, site3],
+            new_edges=set(edges_snapshot_after),
+            left_edges=edges_snapshot_after[:1],
+            right_edges=edges_snapshot_after[1:]
+        )
+        self.vd.merge_steps.append(step2)
+    
+    def _truncate_edge_with_circumcenter(self, edge, center_vertex, depth):
+        """
+        使用外心截斷中垂線
+        
+        邏輯：
+        1. 計算起始點、結束點、外心在法向量線上的符號
+        2. 保留與外心異號的端點
+        3. 將與外心同號的端點替換為外心
+        """
+        if edge.start is None or edge.end is None:
+            print(f"{'  '*depth}    警告：邊的端點未初始化")
+            return
+        
+        # 計算外心在法向量線上的值
+        center_value = edge.get_normal_line_value(center_vertex.x, center_vertex.y)
+        
+        # 計算起始點在法向量線上的值
+        start_value = edge.get_normal_line_value(edge.start.x, edge.start.y)
+        
+        # 計算結束點在法向量線上的值
+        end_value = edge.get_normal_line_value(edge.end.x, edge.end.y)
+        
+        print(f"{'  '*depth}    截斷檢查: 外心={center_value:.2f}, 起點={start_value:.2f}, 終點={end_value:.2f}")
+        
+        # 判斷符號並替換
+        # 如果外心與起始點同號，將起始點替換為外心
+        if (center_value > 0 and start_value > 0) or (center_value < 0 and start_value < 0):
+            print(f"{'  '*depth}    -> 起始點與外心同號，替換為外心")
+            edge.start = center_vertex  # property setter 會自動維護 incident_edges
+        
+        # 如果外心與結束點同號，將結束點替換為外心
+        if (center_value > 0 and end_value > 0) or (center_value < 0 and end_value < 0):
+            print(f"{'  '*depth}    -> 結束點與外心同號，替換為外心")
+            edge.end = center_vertex  # property setter 會自動維護 incident_edges
+    
+    def _truncate_edge_with_circumcenter_opposite(self, edge, center_vertex, depth):
+        """
+        使用外心截斷中垂線（相反邏輯 - 用於鈍角三角形的對邊）
+        
+        邏輯：
+        1. 計算起始點、結束點、外心在法向量線上的符號
+        2. 保留與外心同號的端點（相反！）
+        3. 將與外心異號的端點替換為外心
+        """
+        if edge.start is None or edge.end is None:
+            print(f"{'  '*depth}    警告：邊的端點未初始化")
+            return
+        
+        # 計算外心在法向量線上的值
+        center_value = edge.get_normal_line_value(center_vertex.x, center_vertex.y)
+        
+        # 計算起始點在法向量線上的值
+        start_value = edge.get_normal_line_value(edge.start.x, edge.start.y)
+        
+        # 計算結束點在法向量線上的值
+        end_value = edge.get_normal_line_value(edge.end.x, edge.end.y)
+        
+        print(f"{'  '*depth}    截斷檢查（相反邏輯）: 外心={center_value:.2f}, 起點={start_value:.2f}, 終點={end_value:.2f}")
+        
+        # 判斷符號並替換（相反邏輯）
+        # 如果外心與起始點異號，將起始點替換為外心
+        if (center_value > 0 and start_value < 0) or (center_value < 0 and start_value > 0):
+            print(f"{'  '*depth}    -> 起始點與外心異號，替換為外心（相反邏輯）")
+            edge.start = center_vertex  # property setter 會自動維護 incident_edges
+        
+        # 如果外心與結束點異號，將結束點替換為外心
+        if (center_value > 0 and end_value < 0) or (center_value < 0 and end_value > 0):
+            print(f"{'  '*depth}    -> 結束點與外心異號，替換為外心（相反邏輯）")
+            edge.end = center_vertex  # property setter 會自動維護 incident_edges
+    
+    def _truncate_edge_with_circumcenter_right_opposite(self, edge, center_vertex, right_vertex, depth):
+        """
+        使用外心截斷中垂線（直角三角形對邊專用）
+        
+        邏輯：
+        1. 計算起始點、結束點、直角頂點在法向量線上的符號
+        2. 保留與直角頂點異號的端點
+        3. 將與直角頂點同號的端點替換為外心
+        """
+        if edge.start is None or edge.end is None:
+            print(f"{'  '*depth}    警告：邊的端點未初始化")
+            return
+        
+        # 計算直角頂點在法向量線上的值
+        right_value = edge.get_normal_line_value(right_vertex.x, right_vertex.y)
+        
+        # 計算起始點在法向量線上的值
+        start_value = edge.get_normal_line_value(edge.start.x, edge.start.y)
+        
+        # 計算結束點在法向量線上的值
+        end_value = edge.get_normal_line_value(edge.end.x, edge.end.y)
+        
+        print(f"{'  '*depth}    截斷檢查（直角對邊）: 直角頂點={right_value:.2f}, 起點={start_value:.2f}, 終點={end_value:.2f}")
+        
+        # 判斷符號並替換
+        # 如果直角頂點與起始點同號，將起始點替換為外心
+        if (right_value > 0 and start_value > 0) or (right_value < 0 and start_value < 0):
+            print(f"{'  '*depth}    -> 起始點與直角頂點同號，替換為外心")
+            edge.start = center_vertex  # property setter 會自動維護 incident_edges
+        
+        # 如果直角頂點與結束點同號，將結束點替換為外心
+        if (right_value > 0 and end_value > 0) or (right_value < 0 and end_value < 0):
+            print(f"{'  '*depth}    -> 結束點與直角頂點同號，替換為外心")
+            edge.end = center_vertex  # property setter 會自動維護 incident_edges
+    
+    def _handle_obtuse_triangle(self, site1, site2, site3, depth):
+        """
+        處理鈍角三角形：外心在三角形外部
+        
+        截斷邏輯：
+        - 鈍角頂點的兩條鄰邊：保留與外心異號的端點（與銳角相同）
+        - 鈍角的對邊：保留與外心同號的端點（相反邏輯）
+        
+        特殊情況：
+        - 如果無法計算外心（角度極大），刪除最遠兩點的中垂線
+        """
+        # 計算外心
+        circumcenter = calculate_circumcenter(site1, site2, site3)
+        
+        # 找出鈍角頂點和對邊
+        obtuse_info = find_obtuse_vertex(site1, site2, site3)
+        
+        if circumcenter is None:
+            print(f"{'  '*depth}  -> 警告：無法計算外心（角度極大）")
+            
+            if obtuse_info:
+                obtuse_vertex, opposite_p1, opposite_p2 = obtuse_info
+                print(f"{'  '*depth}  -> 鈍角頂點: ({obtuse_vertex.x:.1f}, {obtuse_vertex.y:.1f})")
+                print(f"{'  '*depth}  -> 刪除對邊 ({opposite_p1.x:.1f}, {opposite_p1.y:.1f})-({opposite_p2.x:.1f}, {opposite_p2.y:.1f}) 的中垂線")
+                
+                # 創建兩條中垂線（排除對邊）
+                edges = []
+                
+                # 找出鈍角頂點相鄰的兩條邊
+                if obtuse_vertex == site1:
+                    edge1 = self._create_perpendicular_bisector(site1, site2, depth)
+                    edge2 = self._create_perpendicular_bisector(site1, site3, depth)
+                    edges = [edge1, edge2]
+                elif obtuse_vertex == site2:
+                    edge1 = self._create_perpendicular_bisector(site1, site2, depth)
+                    edge2 = self._create_perpendicular_bisector(site2, site3, depth)
+                    edges = [edge1, edge2]
+                else:  # obtuse_vertex == site3
+                    edge1 = self._create_perpendicular_bisector(site1, site3, depth)
+                    edge2 = self._create_perpendicular_bisector(site2, site3, depth)
+                    edges = [edge1, edge2]
+                
+                # 記錄步驟（僅顯示兩條邊）
+                step = MergeStep(
+                    step_id=len(self.vd.merge_steps),
+                    description=f"{'  '*depth}鈍角三角形（極大角度）：創建兩條中垂線，對邊已刪除",
+                    left_sites=[site1],
+                    right_sites=[site2, site3],
+                    new_edges=set(edges),
+                    left_edges=edges[:1],
+                    right_edges=edges[1:]
+                )
+                self.vd.merge_steps.append(step)
+            else:
+                # 找不到鈍角也無外心，可能是數值誤差，使用最遠兩點
+                far_p1, far_p2, remaining = find_farthest_two_points(site1, site2, site3)
+                print(f"{'  '*depth}  -> 刪除最遠兩點 ({far_p1.x:.1f}, {far_p1.y:.1f})-({far_p2.x:.1f}, {far_p2.y:.1f}) 的中垂線")
+                
+                # 創建另外兩條中垂線
+                edge1 = self._create_perpendicular_bisector(far_p1, remaining, depth)
+                edge2 = self._create_perpendicular_bisector(far_p2, remaining, depth)
+                edges = [edge1, edge2]
+                
+                step = MergeStep(
+                    step_id=len(self.vd.merge_steps),
+                    description=f"{'  '*depth}無法計算外心：創建兩條中垂線",
+                    left_sites=[site1],
+                    right_sites=[site2, site3],
+                    new_edges=set(edges),
+                    left_edges=edges[:1],
+                    right_edges=edges[1:]
+                )
+                self.vd.merge_steps.append(step)
+            
+            return
+        
+        # 有外心的正常情況
+        cx, cy = circumcenter
+        print(f"{'  '*depth}  -> 外心: ({cx:.1f}, {cy:.1f}) [三角形外部]")
+        
+        if not obtuse_info:
+            print(f"{'  '*depth}  -> 警告：判定為鈍角但找不到鈍角頂點")
+            return
+        
+        obtuse_vertex, opposite_p1, opposite_p2 = obtuse_info
+        print(f"{'  '*depth}  -> 鈍角頂點: ({obtuse_vertex.x:.1f}, {obtuse_vertex.y:.1f})")
+        print(f"{'  '*depth}  -> 對邊: ({opposite_p1.x:.1f}, {opposite_p1.y:.1f})-({opposite_p2.x:.1f}, {opposite_p2.y:.1f})")
+        
+        # 創建外心頂點
+        center_vertex = self.vd.create_vertex(cx, cy, sites=[site1, site2, site3])
+        
+        # 創建三條完整的中垂線
+        edges = []
+        edge_map = {}  # 用於識別對邊，使用 VoronoiSite 作為 key
+        
+        edge1 = self._create_perpendicular_bisector(site1, site2, depth)
+        edges.append(edge1)
+        edge_map[(site1, site2)] = edge1
+        edge_map[(site2, site1)] = edge1
+        
+        edge2 = self._create_perpendicular_bisector(site2, site3, depth)
+        edges.append(edge2)
+        edge_map[(site2, site3)] = edge2
+        edge_map[(site3, site2)] = edge2
+        
+        edge3 = self._create_perpendicular_bisector(site1, site3, depth)
+        edges.append(edge3)
+        edge_map[(site1, site3)] = edge3
+        edge_map[(site3, site1)] = edge3
+        
+        # 步驟1: 顯示未截斷的中垂線（使用快照複製）
+        edges_snapshot = [e.copy_snapshot() for e in edges]
+        step1 = MergeStep(
+            step_id=len(self.vd.merge_steps),
+            description=f"{'  '*depth}鈍角三角形：創建三條完整中垂線（未截斷）",
+            left_sites=[site1],
+            right_sites=[site2, site3],
+            new_edges=set(edges_snapshot),
+            left_edges=edges_snapshot[:1],
+            right_edges=edges_snapshot[1:]
+        )
+        self.vd.merge_steps.append(step1)
+        
+        # 找出對邊（使用 VoronoiSite 作為 key）
+        opposite_edge = edge_map.get((opposite_p1, opposite_p2))
+        
+        # 進行截斷
+        for edge in edges:
+            if edge == opposite_edge:
+                # 對邊：使用相反邏輯（保留同號）
+                print(f"{'  '*depth}    處理對邊中垂線（使用相反邏輯）")
+                self._truncate_edge_with_circumcenter_opposite(edge, center_vertex, depth)
+            else:
+                # 鄰邊：使用正常邏輯（保留異號）
+                self._truncate_edge_with_circumcenter(edge, center_vertex, depth)
+        
+        # 步驟2: 顯示截斷後的中垂線（使用快照複製，避免後續修改影響）
+        edges_snapshot_after = [e.copy_snapshot() for e in edges]
+        step2 = MergeStep(
+            step_id=len(self.vd.merge_steps),
+            description=f"{'  '*depth}鈍角三角形：用外心截斷中垂線（對邊使用相反邏輯）",
+            left_sites=[site1],
+            right_sites=[site2, site3],
+            new_edges=set(edges_snapshot_after),
+            left_edges=edges_snapshot_after[:1],
+            right_edges=edges_snapshot_after[1:]
+        )
+        self.vd.merge_steps.append(step2)
+    
+    def _handle_right_triangle(self, site1, site2, site3, depth):
+        """
+        處理直角三角形：外心在斜邊中點
+        
+        截斷邏輯：
+        - 直角頂點的兩條鄰邊：保留與外心異號的端點（與銳角相同）
+        - 直角的對邊（斜邊）：保留與直角頂點異號的端點（特殊邏輯）
+        """
+        # 計算外心
+        circumcenter = calculate_circumcenter(site1, site2, site3)
+        
+        # 找出直角頂點和對邊
+        right_info = find_right_vertex(site1, site2, site3)
+        
+        if circumcenter is None:
+            print(f"{'  '*depth}  -> 警告：無法計算外心")
+            return
+        
+        cx, cy = circumcenter
+        print(f"{'  '*depth}  -> 外心: ({cx:.1f}, {cy:.1f}) [斜邊中點]")
+        
+        right_vertex, opposite_p1, opposite_p2 = right_info
+        print(f"{'  '*depth}  -> 直角頂點: ({right_vertex.x:.1f}, {right_vertex.y:.1f})")
+        print(f"{'  '*depth}  -> 對邊（斜邊）: ({opposite_p1.x:.1f}, {opposite_p1.y:.1f})-({opposite_p2.x:.1f}, {opposite_p2.y:.1f})")
+        
+        # 創建外心頂點
+        center_vertex = self.vd.create_vertex(cx, cy, sites=[site1, site2, site3])
+        
+        # 創建三條完整的中垂線
+        edges = []
+        edge_map = {}  # 用於識別對邊
+        
+        edge1 = self._create_perpendicular_bisector(site1, site2, depth)
+        edges.append(edge1)
+        edge_map[(site1, site2)] = edge1
+        edge_map[(site2, site1)] = edge1
+        
+        edge2 = self._create_perpendicular_bisector(site2, site3, depth)
+        edges.append(edge2)
+        edge_map[(site2, site3)] = edge2
+        edge_map[(site3, site2)] = edge2
+        
+        edge3 = self._create_perpendicular_bisector(site1, site3, depth)
+        edges.append(edge3)
+        edge_map[(site1, site3)] = edge3
+        edge_map[(site3, site1)] = edge3
+        
+        # 步驟1: 顯示未截斷的中垂線（使用快照複製）
+        edges_snapshot = [e.copy_snapshot() for e in edges]
+        step1 = MergeStep(
+            step_id=len(self.vd.merge_steps),
+            description=f"{'  '*depth}直角三角形：創建三條完整中垂線（未截斷）",
+            left_sites=[site1],
+            right_sites=[site2, site3],
+            new_edges=set(edges_snapshot),
+            left_edges=edges_snapshot[:1],
+            right_edges=edges_snapshot[1:]
+        )
+        self.vd.merge_steps.append(step1)
+        
+        # 找出對邊（斜邊）
+        opposite_edge = edge_map.get((opposite_p1, opposite_p2))
+        
+        # 進行截斷
+        for edge in edges:
+            if edge == opposite_edge:
+                # 對邊（斜邊）：使用直角特殊邏輯（與直角頂點異號）
+                print(f"{'  '*depth}    處理對邊（斜邊）中垂線（與直角頂點異號）")
+                self._truncate_edge_with_circumcenter_right_opposite(edge, center_vertex, right_vertex, depth)
+            else:
+                # 鄰邊：使用正常邏輯（保留異號）
+                self._truncate_edge_with_circumcenter(edge, center_vertex, depth)
+        
+        # 步驟2: 顯示截斷後的中垂線（使用快照複製，避免後續修改影響）
+        edges_snapshot_after = [e.copy_snapshot() for e in edges]
+        step2 = MergeStep(
+            step_id=len(self.vd.merge_steps),
+            description=f"{'  '*depth}直角三角形：用外心截斷中垂線（斜邊與直角頂點異號）",
+            left_sites=[site1],
+            right_sites=[site2, site3],
+            new_edges=set(edges_snapshot_after),
+            left_edges=edges_snapshot_after[:1],
+            right_edges=edges_snapshot_after[1:]
+        )
+        self.vd.merge_steps.append(step2)
+    
+    def _create_perpendicular_bisector(self, site1, site2, depth):
+        """創建兩點之間的完整中垂線（延伸到邊界）"""
+        edge = self.vd.create_edge(site1, site2)
+        
+        # 計算中點和方向
+        mid_x, mid_y = edge.get_midpoint()
+        
+        dx = site2.x - site1.x
+        dy = site2.y - site1.y
+        
+        # 垂直方向
+        direction_x = -dy
+        direction_y = dx
+        
+        length = math.sqrt(direction_x**2 + direction_y**2)
+        if length > 1e-9:
+            direction_x /= length
+            direction_y /= length
+        
+        # 延伸到邊界
+        x1, y1, x2, y2 = extend_line_to_boundary(mid_x, mid_y, direction_x, direction_y)
+        
+        # 創建端點
+        start_vertex = self.vd.create_vertex(x1, y1, sites=[site1, site2])
+        end_vertex = self.vd.create_vertex(x2, y2, sites=[site1, site2])
+        
+        edge.start = start_vertex
+        edge.end = end_vertex
+        
+        return edge
 
-root = tk.Tk()
-app = VoronoiGUI(root)
-root.mainloop()
+
+# 主程式入口
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = VoronoiGUI(root)
+    root.mainloop()
