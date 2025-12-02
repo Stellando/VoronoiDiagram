@@ -500,84 +500,65 @@ class VoronoiDiagram:
     def remove_orphaned_edges(self, affected_vertices: Optional[List[VoronoiVertex]] = None) -> List[VoronoiEdge]:
         """
         移除孤立的邊（連接到度數為 1 的頂點的邊）
+        修正版：使用無窮迴圈反覆檢查，直到沒有任何邊被移除為止，
+        解決了「因為標記已檢查而漏掉新產生的孤立邊」的問題。
         
-        當 hyperplane 截斷導致頂點只剩一條邊連接時，該邊應該被移除。
         檢查條件：
-        1. 外心頂點（Circumcenter）：len(vertex.sites) == 3 且 not is_junction
-        2. 交匯點（Junction Vertex）：is_junction == True
+        1. 必須是 Voronoi 頂點（不能是站點）
+        2. 度數為 1（是死胡同）
+        3. 是可被孤立的類型（外心或交匯點）
         
         Args:
-            affected_vertices: 受影響的頂點列表。如果為 None，檢查所有頂點
+            affected_vertices: 受影響的頂點列表（此參數被忽略，總是檢查所有頂點以確保清理乾淨）
             
         Returns:
             被移除的邊列表
         """
-        removed_edges = []
+        all_removed_edges = []
         
-        # 使用列表追蹤待檢查的頂點，並手動檢查重複（因為 VoronoiVertex 無法 hash）
-        if affected_vertices:
-            vertices_to_check = list(affected_vertices)
-        else:
+        # 持續迴圈直到系統穩定（沒有新的邊被移除）
+        while True:
+            removed_in_this_pass = []
+            
+            # 建立要檢查的頂點列表
+            # 注意：這裡總是檢查所有頂點，以確保清理乾淨。
+            # 雖然效率稍微低一點，但對於 Voronoi 的正確性至關重要。
             vertices_to_check = list(self.vertices)
-        
-        # 使用已檢查列表避免重複檢查
-        checked_vertices = []
-        
-        print(f"  [清理] 開始檢查 {len(vertices_to_check)} 個頂點...")
-        
-        # 持續檢查直到沒有度數為 1 的頂點
-        while vertices_to_check:
-            # 取出一個頂點檢查
-            vertex = vertices_to_check.pop(0)
             
-            # 跳過已檢查的頂點
-            if vertex in checked_vertices:
-                continue
-            checked_vertices.append(vertex)
-            
-            # **關鍵：只檢查外心或交匯點（初始度數為 3 的頂點）**
-            if not vertex.is_orphanable():
-                continue
-            
-            # 檢查這個頂點是否度數為 1
-            if vertex.degree() == 1:
-                # 取得唯一連接到這個頂點的邊
-                orphaned_edge = vertex.incident_edges[0]
-                
-                vertex_type = "交匯點" if vertex.is_junction else "外心"
-                print(f"  [清理] {vertex_type} (sites={len(vertex.sites)}, degree=1) at ({vertex.x:.1f}, {vertex.y:.1f})")
-                print(f"  [清理] 準備移除孤立邊 #{orphaned_edge.id}: site {orphaned_edge.site1.id}-{orphaned_edge.site2.id}")
-                
-                # 找出這條邊的另一個端點（不是當前檢查的頂點）
-                other_vertex = None
-                if orphaned_edge.start == vertex:
-                    other_vertex = orphaned_edge.end
-                elif orphaned_edge.end == vertex:
-                    other_vertex = orphaned_edge.start
-                
-                # 移除這條邊（會自動從 vd.edges、站點、以及兩端頂點的 incident_edges 中移除）
-                self.remove_edge(orphaned_edge)
-                removed_edges.append(orphaned_edge)
-                
-                print(f"  [清理] 已移除邊 #{orphaned_edge.id}")
-                
-                # 檢查另一個端點：只有當它也可能成為孤立點時才加入待檢查列表
-                if other_vertex and other_vertex != vertex:
-                    other_type = "交匯點" if other_vertex.is_junction else ("外心" if other_vertex.is_circumcenter() else "其他")
-                    print(f"  [清理] 檢查另一個端點: {other_type}, sites={len(other_vertex.sites)}, degree={other_vertex.degree()}")
+            for vertex in vertices_to_check:
+                # 檢查條件：
+                # 1. 必須是 Voronoi 頂點（不能是站點）
+                # 2. 度數為 1（是死胡同）
+                # 3. 是可被孤立的類型（外心或交匯點）
+                if vertex.point_type == PointType.VORONOI_VERTEX and \
+                   vertex.degree() == 1 and \
+                   vertex.is_orphanable():
                     
-                    # 只有外心或交匯點才繼續檢查
-                    if other_vertex.is_orphanable() and other_vertex.degree() >= 1:
-                        if other_vertex not in vertices_to_check and other_vertex not in checked_vertices:
-                            print(f"  [清理] 將另一個{other_type}加入檢查列表")
-                            vertices_to_check.append(other_vertex)
-        
-        if removed_edges:
-            print(f"  [清理] 總共移除了 {len(removed_edges)} 條孤立邊")
-        else:
-            print(f"  [清理] 沒有找到需要移除的孤立邊")
-        
-        return removed_edges
+                    # 取得這條唯一的邊
+                    edge = vertex.incident_edges[0]
+                    
+                    # 記錄日誌（可選）
+                    # print(f"  [清理] 移除孤立邊: {edge} 連接頂點 ({vertex.x:.1f}, {vertex.y:.1f})")
+                    
+                    # 移除邊
+                    self.remove_edge(edge)
+                    removed_in_this_pass.append(edge)
+            
+            # 如果這一輪沒有移除任何邊，表示清理完成，跳出迴圈
+            if not removed_in_this_pass:
+                break
+                
+            # 將這一輪移除的邊加入總列表
+            all_removed_edges.extend(removed_in_this_pass)
+            
+            # 繼續下一輪迴圈...
+            # 因為剛剛移除了邊，某些頂點的度數可能從 2 變成了 1，
+            # 下一輪迴圈就會抓到它們並繼續清理。
+            
+        if all_removed_edges:
+            print(f"  [總結] 共清除了 {len(all_removed_edges)} 條連鎖孤立邊")
+            
+        return all_removed_edges
     
     def clear(self):
         """清空所有資料"""

@@ -8,7 +8,8 @@ import math
 # 畫布和計算範圍常數
 CANVAS_WIDTH = 600
 CANVAS_HEIGHT = 600
-CALC_MARGIN = 1000  # 計算範圍延伸
+# 修改：大幅擴大計算邊界，確保遠處的交點能被計算到
+CALC_MARGIN = 20000  # 計算範圍延伸
 CALC_MIN = -CALC_MARGIN
 CALC_MAX_X = CANVAS_WIDTH + CALC_MARGIN
 CALC_MAX_Y = CANVAS_HEIGHT + CALC_MARGIN
@@ -249,82 +250,79 @@ def compute_convex_hull(points):
     return ConvexHull(points=hull_points, edges=edges)
 
 
-def compute_hyperplane_points(left_sites, right_sites, merged_hull):
+def compute_hyperplane_points(left_sites, right_sites, merged_hull, left_hull, right_hull):
     """
-    計算 hyperplane 的兩個端點
+    計算 hyperplane 的兩個端點（上切線 Upper Tangent）
     
-    參數:
-        left_sites: 左半邊的站點列表
-        right_sites: 右半邊的站點列表
-        merged_hull: ConvexHull - 合併後的凸包
-    
-    返回:
-        (point1, point2) - hyperplane 的兩個端點，如果無法計算則返回 None
+    修正版：使用更穩健的 Walking Algorithm
+    1. 修正起始點選擇邏輯
+    2. 修正幾何方向判斷（螢幕座標系 Y 軸向下）
     """
-    if not merged_hull or not merged_hull.points or len(merged_hull.points) < 2:
+    if not left_hull or not left_hull.points:
         return None
-    
-    # 計算左右分界線的 X 座標（左側最右邊和右側最左邊的中點）
-    left_max_x = max(s.x for s in left_sites)
-    right_min_x = min(s.x for s in right_sites)
-    dividing_line_x = (left_max_x + right_min_x) / 2.0
-    
-    print(f"    左側最大X: {left_max_x:.1f}, 右側最小X: {right_min_x:.1f}, 分界線X: {dividing_line_x:.1f}")
-    
-    # 計算凸包點的 Y 座標中位數（注意：Y 座標倒置，小值在上）
-    hull_points = merged_hull.points
-    y_values = sorted([p.y for p in hull_points])
-    n = len(y_values)
-    
-    if n % 2 == 0:
-        y_median = (y_values[n//2 - 1] + y_values[n//2]) / 2.0
-    else:
-        y_median = y_values[n//2]
-    
-    print(f"    凸包點數: {len(hull_points)}, Y中位數: {y_median:.1f}")
-    
-    # 篩選上半部的點（Y < 中位數，因為 Y 座標倒置）
-    upper_hull_points = [p for p in hull_points if p.y < y_median]
-    
-    # 如果上半部點太少，放寬條件使用 Y <= 中位數
-    if len(upper_hull_points) < 2:
-        upper_hull_points = [p for p in hull_points if p.y <= y_median]
-    
-    if len(upper_hull_points) < 2:
-        print(f"    警告：上半部點數不足 ({len(upper_hull_points)})")
+    if not right_hull or not right_hull.points:
         return None
-    
-    print(f"    上半部點數: {len(upper_hull_points)}")
-    
-    # 將上半部的點分為左側和右側
-    left_upper = [p for p in upper_hull_points if p.x < dividing_line_x]
-    right_upper = [p for p in upper_hull_points if p.x > dividing_line_x]
-    
-    print(f"    左側上半部: {len(left_upper)} 點, 右側上半部: {len(right_upper)} 點")
-    
-    # 如果左側或右側上半部為空，使用所有凸包點作為備選
-    if not left_upper or not right_upper:
-        print(f"    警告：左側或右側上半部為空，改用所有凸包點")
-        left_candidates = [p for p in hull_points if p.x < dividing_line_x]
-        right_candidates = [p for p in hull_points if p.x > dividing_line_x]
         
-        if not left_candidates or not right_candidates:
-            print(f"    錯誤：無法找到左側或右側候選點")
-            return None
-        
-        # 找到左側離分界線最近的點
-        left_point = min(left_candidates, key=lambda p: abs(p.x - dividing_line_x))
-        
-        # 找到右側離分界線最近的點
-        right_point = min(right_candidates, key=lambda p: abs(p.x - dividing_line_x))
-    else:
-        # 找到左側離分界線最近的點
-        left_point = min(left_upper, key=lambda p: abs(p.x - dividing_line_x))
-        
-        # 找到右側離分界線最近的點
-        right_point = min(right_upper, key=lambda p: abs(p.x - dividing_line_x))
+    l_points = left_hull.points
+    r_points = right_hull.points
+    n_l = len(l_points)
+    n_r = len(r_points)
     
-    print(f"    選擇的點: 左 ({left_point.x:.1f}, {left_point.y:.1f}), 右 ({right_point.x:.1f}, {right_point.y:.1f})")
+    # =========================================================================
+    # 1. 尋找最佳起始點
+    # 原本只找最右/最左，現在加入 Y 軸考量，避免起點落在凸包底部導致搜尋路徑被卡住
+    # 左凸包：找 X 最大者；若 X 相同，找 Y 最小者（最右上）
+    l_idx = max(range(n_l), key=lambda i: (l_points[i].x, -l_points[i].y))
+    # 右凸包：找 X 最小者；若 X 相同，找 Y 最小者（最左上）
+    r_idx = min(range(n_r), key=lambda i: (r_points[i].x, r_points[i].y))
+    # =========================================================================
+
+    def is_upper_tangent_violated(p_curr, p_other, p_candidate):
+        """
+        判斷 p_candidate 是否比當前切線 (p_curr -> p_other) '更高'
+        在螢幕座標系(Y向下)中:
+        向量 V = p_other - p_curr
+        如果 p_candidate 在 V 的 '左側' (逆時針)，則代表它更靠上方
+        """
+        # 叉積計算: (b.x - a.x)*(c.y - a.y) - (b.y - a.y)*(c.x - a.x)
+        # 此處 a=p_curr, b=p_other, c=p_candidate
+        val = (p_other.x - p_curr.x) * (p_candidate.y - p_curr.y) - \
+              (p_other.y - p_curr.y) * (p_candidate.x - p_curr.x)
+        
+        # 在螢幕座標系中，如果 val < 0，表示 p_candidate 在 p_curr->p_other 的 '左側' (上方)
+        # 我們使用一個微小的容差值來處理共線情況
+        return val < -1e-7
+
+    # 2. Walking Algorithm 尋找上切線
+    done = False
+    while not done:
+        done = True
+        
+        # 左凸包：嘗試逆時針移動 (Index + 1)
+        # 我們希望切線是該凸包的"最高"邊界，所以如果下一個點在當前連線的"上方"，就移動過去
+        while True:
+            l_next = (l_idx + 1) % n_l
+            if is_upper_tangent_violated(l_points[l_idx], r_points[r_idx], l_points[l_next]):
+                l_idx = l_next
+                done = False
+            else:
+                break
+                
+        # 右凸包：嘗試順時針移動 (Index - 1)
+        # 我們希望切線是該凸包的"最高"邊界，如果前一個點在當前連線的"上方"，就移動過去
+        while True:
+            r_prev = (r_idx - 1 + n_r) % n_r
+            # 注意這裡向量方向是 左->右，判斷邏輯一致
+            if is_upper_tangent_violated(l_points[l_idx], r_points[r_idx], r_points[r_prev]):
+                r_idx = r_prev
+                done = False
+            else:
+                break
+
+    left_point = l_points[l_idx]
+    right_point = r_points[r_idx]
+    
+    print(f"    [Hyperplane Start] 鎖定上切線: 左 ({left_point.x:.1f}, {left_point.y:.1f}) -> 右 ({right_point.x:.1f}, {right_point.y:.1f})")
     
     return (left_point, right_point)
 
@@ -368,33 +366,38 @@ def line_intersection(p1, p2, p3, p4):
     return (x, y, t1, t2)
 
 
-def truncate_hyperplane(hyperplane_start, hyperplane_end, all_edges, left_sites, right_sites, depth=0):
+# ==========================================
+# 輔助函數：判斷點在直線的哪一側
+# ==========================================
+def get_point_side(p, line_start, line_end):
+    """
+    計算點 p 相對於有向線段 (line_start -> line_end) 的位置
+    使用叉積原理 (Cross Product)
+    返回:
+        正值: 點在線段左側
+        負值: 點在線段右側
+        0: 點在線上
+    注意：螢幕座標系 Y 軸向下，方向性可能與笛卡爾座標相反，
+    但只要相對比較符號相同即可。
+    """
+    return (line_end.x - line_start.x) * (p.y - line_start.y) - \
+           (line_end.y - line_start.y) * (p.x - line_start.x)
+
+
+def truncate_hyperplane(hyperplane_start, hyperplane_end, all_edges, left_sites, right_sites, active_sites=None, depth=0):
     """
     截斷 hyperplane：找到由上往下第一個交點，並截斷所有在該點重疊的中垂線
-    
-    參數:
-        hyperplane_start: hyperplane 的起始點（應為 Y 較小的點）
-        hyperplane_end: hyperplane 的結束點（應為 Y 較大的點）
-        all_edges: 所有現有的邊（不包括 hyperplane 自己）
-        left_sites: 左半邊的站點列表
-        right_sites: 右半邊的站點列表
-        depth: 遞迴深度（用於輸出）
-    
-    返回:
-        (new_end_point, intersected_edges_list, all_intersected_sites) 或 (None, None, None)
-        new_end_point: 新的結束點（交點）
-        intersected_edges_list: 所有相交的邊的列表
-        all_intersected_sites: 所有涉及的站點集合（不重複）
+    修正：傳入 active_sites (產生當前 hyperplane 的站點對)，確保使用正確的參考站點來判斷保留方向
     """
-    # 確保 start 的 Y 小於 end 的 Y（start 在上方）
+    # 確保 start 的 Y 小於 end 的 Y（由上往下繪製）
     if hyperplane_start.y > hyperplane_end.y:
         hyperplane_start, hyperplane_end = hyperplane_end, hyperplane_start
         print(f"{'  '*depth}    [截斷] 對調起始點和結束點")
     
     print(f"{'  '*depth}    [截斷] Hyperplane: ({hyperplane_start.x:.1f}, {hyperplane_start.y:.1f}) -> ({hyperplane_end.x:.1f}, {hyperplane_end.y:.1f})")
     
-    # 容差：±1 像素
-    INTERSECTION_TOLERANCE = 1.0
+    # 修正：提高精度，1.0 像素誤差太大，容易導致拓樸錯誤
+    INTERSECTION_TOLERANCE = 1e-5
     
     closest_intersection = None
     closest_t = float('inf')
@@ -412,11 +415,10 @@ def truncate_hyperplane(hyperplane_start, hyperplane_end, all_edges, left_sites,
             x, y, t1, t2 = result
             
             # t1 是 hyperplane 上的參數，t2 是邊上的參數
-            # 我們要找 t1 > 0（在起始點之後）且 t1 < 1（在結束點之前）
-            # 同時 t2 應該在 [0, 1] 之間（在邊的範圍內）
-            if 0 < t1 < 1 and 0 <= t2 <= 1:
+            # 嚴格檢查 t1 > epsilon 避免在起始點重複碰撞
+            if 1e-9 < t1 < 1 and 0 <= t2 <= 1:
                 all_intersections.append((x, y, t1, t2, edge))
-                print(f"{'  '*depth}      找到交點: ({x:.1f}, {y:.1f}), t1={t1:.3f}, 邊: ({edge.start.x:.1f},{edge.start.y:.1f})-({edge.end.x:.1f},{edge.end.y:.1f})")
+                # print(f"{'  '*depth}      找到交點: ({x:.1f}, {y:.1f}), t1={t1:.3f}")
                 
                 # 記錄最近的交點
                 if t1 < closest_t:
@@ -426,18 +428,17 @@ def truncate_hyperplane(hyperplane_start, hyperplane_end, all_edges, left_sites,
     if closest_intersection:
         x, y = closest_intersection
         
-        # 找出所有在容差範圍內的重疊交點
+        # 找出所有在容差範圍內的重疊交點（處理多邊共點情況）
         overlapping_intersections = []
         for ix, iy, t1, t2, edge in all_intersections:
-            # 計算與最近交點的距離
             distance = math.sqrt((ix - x)**2 + (iy - y)**2)
-            if distance <= INTERSECTION_TOLERANCE:
+            # 使用稍大的容差來合併非常接近的交點
+            if distance <= 1e-4: 
                 overlapping_intersections.append((ix, iy, t1, t2, edge))
         
         print(f"{'  '*depth}    [截斷] 最近交點: ({x:.1f}, {y:.1f})")
-        print(f"{'  '*depth}    [截斷] 在容差 {INTERSECTION_TOLERANCE} 內找到 {len(overlapping_intersections)} 條重疊的邊")
         
-        # 收集所有涉及的站點（不重複）
+        # 收集所有涉及的站點
         all_sites = set()
         intersected_edges = []
         
@@ -447,53 +448,82 @@ def truncate_hyperplane(hyperplane_start, hyperplane_end, all_edges, left_sites,
             all_sites.add(site1)
             all_sites.add(site2)
             intersected_edges.append(edge)
-            print(f"{'  '*depth}      邊: ({edge.start.x:.1f},{edge.start.y:.1f})-({edge.end.x:.1f},{edge.end.y:.1f}), 由點 ({site1.x:.1f},{site1.y:.1f}) 和 ({site2.x:.1f},{site2.y:.1f}) 產生")
         
-        # 創建新的交點頂點（交匯點 - Junction Vertex）
+        # 創建新的交點頂點
         from datastructer import VoronoiVertex, Point
         intersection_vertex = VoronoiVertex(x, y, sites=list(all_sites))
-        intersection_vertex.is_junction = True  # 標記為交匯點
-        print(f"{'  '*depth}    [截斷] 創建交匯點 at ({x:.1f}, {y:.1f})")
+        intersection_vertex.is_junction = True
         
-        # 截斷所有重疊的邊
+        # -----------------------------------------------------
+        # 核心修正邏輯：決定保留邊的哪一端
+        # -----------------------------------------------------
         for edge in intersected_edges:
-            site1 = edge.site1
-            site2 = edge.site2
+            # 關鍵修正：優先從 active_sites 中選取參考站點
+            ref_site = edge.site1  # 預設值
             
-            # 判斷被碰到的邊屬於左半邊還是右半邊
-            site1_in_left = site1 in left_sites
-            site2_in_left = site2 in left_sites
+            if active_sites:
+                # 檢查這條邊是否連接著產生當前 Hyperplane 的站點
+                if edge.site1 in active_sites:
+                    ref_site = edge.site1
+                elif edge.site2 in active_sites:
+                    ref_site = edge.site2
+                else:
+                    # 這條邊不連接 active sites，可能是數值誤差選到了鄰近的邊
+                    # 這種情況下，保留預設行為，但印出警告
+                    print(f"{'  '*depth}    [警告] 被截斷的邊不屬於當前 Hyperplane 產生點")
             
-            if site1_in_left and site2_in_left:
-                # 兩個點都在左側，屬於左半邊
-                print(f"{'  '*depth}    [截斷] 邊 ({site1.x:.1f},{site1.y:.1f})-({site2.x:.1f},{site2.y:.1f}) 屬於左半邊，將 X 較大的端點改為交點")
-                # 將 X 較大的端點改為交點
-                if edge.start.x > edge.end.x:
-                    edge.start = intersection_vertex
-                    print(f"{'  '*depth}    [截斷] 修改起始點為 ({x:.1f}, {y:.1f})")
-                else:
-                    edge.end = intersection_vertex
-                    print(f"{'  '*depth}    [截斷] 修改結束點為 ({x:.1f}, {y:.1f})")
-            elif not site1_in_left and not site2_in_left:
-                # 兩個點都在右側，屬於右半邊
-                print(f"{'  '*depth}    [截斷] 邊 ({site1.x:.1f},{site1.y:.1f})-({site2.x:.1f},{site2.y:.1f}) 屬於右半邊，將 X 較小的端點改為交點")
-                # 將 X 較小的端點改為交點
-                if edge.start.x < edge.end.x:
-                    edge.start = intersection_vertex
-                    print(f"{'  '*depth}    [截斷] 修改起始點為 ({x:.1f}, {y:.1f})")
-                else:
-                    edge.end = intersection_vertex
-                    print(f"{'  '*depth}    [截斷] 修改結束點為 ({x:.1f}, {y:.1f})")
+            # 計算參考站點在 Hyperplane 的哪一側
+            #    Hyperplane 方向向量為 hyperplane_start -> hyperplane_end
+            site_side = get_point_side(ref_site, hyperplane_start, hyperplane_end)
+            
+            # 3. 計算邊的兩個端點在 Hyperplane 的哪一側
+            start_side = get_point_side(edge.start, hyperplane_start, hyperplane_end)
+            end_side = get_point_side(edge.end, hyperplane_start, hyperplane_end)
+            
+            # 4. 判斷邏輯：
+            #    我們要保留 "與參考站點在同一側" 的那個端點
+            #    如果端點與參考站點同號 (相乘 > 0)，則保留該端點
+            
+            # 判斷 Start 點是否與 Site 同側
+            keep_start = (start_side * site_side) >= 0
+            
+            # 判斷 End 點是否與 Site 同側
+            keep_end = (end_side * site_side) >= 0
+            
+            # 執行截斷與替換
+            modified = False
+            if keep_start and not keep_end:
+                # 保留 Start，修改 End 為交點
+                print(f"{'  '*depth}    [截斷] 修改 End 為交點")
+                edge.end = intersection_vertex
+                modified = True
+            elif keep_end and not keep_start:
+                # 保留 End，修改 Start 為交點
+                print(f"{'  '*depth}    [截斷] 修改 Start 為交點")
+                edge.start = intersection_vertex
+                modified = True
+            elif not keep_start and not keep_end:
+                # 兩端都在異側（理論上不應發生，除非線段完全穿過且很短），
+                # 或是數值誤差。這裡保守處理，找較遠的點替換，或者報錯。
+                # 這裡假設保留幾何上較合理的一端(距離交點較遠的?)
+                # 暫時強制修改 End
+                edge.end = intersection_vertex
+                print(f"{'  '*depth}    [截斷警告] 兩端點皆異側，強制修改 End")
             else:
-                # 跨越左右邊界的邊（一個點在左，一個在右）
-                print(f"{'  '*depth}    [截斷] 警告：邊 ({site1.x:.1f},{site1.y:.1f})-({site2.x:.1f},{site2.y:.1f}) 跨越左右邊界")
-        
-        # 創建交點的 Point 物件（用於返回）
+                # 兩端都在同側：表示這條線根本不該被切（可能是數值誤差導致誤判交點）
+                # 或者交點就在端點上。
+                # 計算距離，將較近的端點吸附到交點
+                d_start = (edge.start.x - x)**2 + (edge.start.y - y)**2
+                d_end = (edge.end.x - x)**2 + (edge.end.y - y)**2
+                if d_start < d_end:
+                     edge.start = intersection_vertex
+                else:
+                     edge.end = intersection_vertex
+                print(f"{'  '*depth}    [截斷微調] 吸附端點到交點")
+
         intersection_point = Point(x, y)
-        
         return (intersection_point, intersected_edges, list(all_sites))
     else:
-        print(f"{'  '*depth}    [截斷] 未找到交點")
         return (None, None, None)
 
 
@@ -554,8 +584,8 @@ def continue_hyperplane_from_intersection(vd, initial_start, initial_generating_
     print(f"{'  '*depth}  [繼續 Hyperplane] 初始產生點: ({site_a.x:.1f}, {site_a.y:.1f}) 和 ({site_c.x:.1f}, {site_c.y:.1f})")
     print(f"{'  '*depth}  [繼續 Hyperplane] 中垂線方向: ({direction_x:.3f}, {direction_y:.3f})")
     
-    # 從碰撞點開始，延伸一大段距離
-    extension_length = 2000
+    # 修改:大幅增加延伸長度,確保能延伸出計算邊界 (配合 CALC_MARGIN)
+    extension_length = 40000  # 原本是 2000
     current_end_x = current_start.x + direction_x * extension_length
     current_end_y = current_start.y + direction_y * extension_length
     current_end = Point(current_end_x, current_end_y)
@@ -583,8 +613,10 @@ def continue_hyperplane_from_intersection(vd, initial_start, initial_generating_
         print(f"{'  '*depth}  [繼續 Hyperplane] 當前層級共有 {len(current_level_edges)} 條邊")
         
         # 執行截斷，找到下一個碰撞點
+        # 修正：傳入 active_sites=current_generating_sites
         new_end, intersected_edges, all_intersected_sites = truncate_hyperplane(
-            current_start, current_end, current_level_edges, left_sites, right_sites, depth + 1
+            current_start, current_end, current_level_edges, left_sites, right_sites, 
+            active_sites=current_generating_sites, depth=depth + 1
         )
         
         # 檢查是否找到碰撞點
@@ -716,8 +748,8 @@ def continue_hyperplane_from_intersection(vd, initial_start, initial_generating_
         
         print(f"{'  '*depth}  [繼續 Hyperplane] 中垂線方向: ({direction_x:.3f}, {direction_y:.3f})")
         
-        # 從碰撞點開始，延伸一大段距離（例如 2000）
-        extension_length = 2000
+        # 修改:大幅增加延伸長度
+        extension_length = 40000  # 原本是 2000
         next_end_x = new_end.x + direction_x * extension_length
         next_end_y = new_end.y + direction_y * extension_length
         
@@ -895,7 +927,7 @@ class VoronoiGUI:
         self.canvas = tk.Canvas(canvas_frame, width=600, height=600, bg="white")
         self.canvas.pack()
         
-        # 右側信息面板框架
+        # 右側資訊面板框架
         info_frame = tk.Frame(main_frame, width=200, bg="lightgray")
         info_frame.pack(side=tk.RIGHT, fill=tk.Y)
         info_frame.pack_propagate(False)  # 保持固定寬度
@@ -962,6 +994,14 @@ class VoronoiGUI:
         self.prev_button = tk.Button(root, text="Previous Group", command=self.prev_group)
         self.prev_button.pack(side=tk.LEFT)
         
+        # 輸出按鈕
+        self.export_button = tk.Button(root, text="Export to File", command=self.export_result)
+        self.export_button.pack(side=tk.LEFT)
+        
+        # 輸入按鈕
+        self.import_button = tk.Button(root, text="Import from File", command=self.import_and_display)
+        self.import_button.pack(side=tk.LEFT)
+        
         # 切換顯示選項
         self.hull_toggle = tk.Checkbutton(root, text="Show Convex Hull", 
                                          variable=self.show_convex_hull, 
@@ -977,18 +1017,47 @@ class VoronoiGUI:
         self.canvas.bind("<Button-1>", self.add_point)
         self.canvas.bind("<Motion>", self.on_mouse_move)
         self.canvas.bind("<Leave>", self.on_mouse_leave)
+        
+        # 鍵盤事件
+        self.root.bind("<Key>", self.on_key_press)
+    
+    def on_key_press(self, event):
+        """處理鍵盤按鍵事件"""
+        key = event.keysym.lower()
+        
+        if key == 'e':
+            # E 鍵：輸出到檔案
+            self.export_result()
+        elif key == 'i':
+            # I 鍵：從檔案讀取
+            self.import_and_display()
+        elif key == 'c':
+            # C 鍵：清空
+            self.clear_points()
+        elif key == 'v':
+            # V 鍵：計算 Voronoi
+            self.run_voronoi()
+        elif key == 's':
+            # S 鍵：Step by step
+            self.step_voronoi()
+        elif key == 'left':
+            # 左箭頭：上一步
+            self.prev_step()
+        elif key == 'right':
+            # 右箭頭：下一步
+            self.next_step()
     
     def on_mouse_move(self, event):
-        """處理鼠標移動事件，更新座標顯示"""
+        """處理滑鼠移動事件，更新座標顯示"""
         x, y = event.x, event.y
         self.coord_display.config(text=f"X: {x}\nY: {y}")
     
     def on_mouse_leave(self, event):
-        """處理鼠標離開畫布事件"""
+        """處理滑鼠離開畫布事件"""
         self.coord_display.config(text="X: --\nY: --")
     
     def update_stats_display(self):
-        """更新統計信息顯示"""
+        """更新統計資訊顯示"""
         num_sites = len(self.vd.sites) if hasattr(self, 'vd') else len(self.points)
         num_edges = len(self.vd.edges) if hasattr(self, 'vd') else 0
         num_vertices = len(self.vd.vertices) if hasattr(self, 'vd') else 0
@@ -1011,7 +1080,7 @@ class VoronoiGUI:
         pass
     
     def add_point(self, event):
-        """處理鼠標點擊，添加點"""
+        """處理滑鼠點擊，添加點"""
         x, y = event.x, event.y
         self.points.append((x, y))
         
@@ -1154,6 +1223,142 @@ class VoronoiGUI:
         self.reset_state()
         self.update_stats_display()
         print("清空所有資料")
+    
+    def export_result(self):
+        """輸出 Voronoi Diagram 結果到文字檔案"""
+        if not self.vd.edges or len(self.vd.sites) == 0:
+            messagebox.showwarning("無法輸出", "請先計算 Voronoi Diagram！")
+            return
+        
+        # 使用檔案對話框讓使用者選擇儲存位置
+        from tkinter import filedialog
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            initialfile="output.txt",
+            title="儲存 Voronoi Diagram 結果"
+        )
+        
+        if filename:
+            self.export_to_text_file(filename)
+    
+    def import_and_display(self):
+        """讀取輸出文字檔案並顯示圖形"""
+        from tkinter import filedialog
+        
+        filename = filedialog.askopenfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="讀取 Voronoi Diagram 輸出檔案"
+        )
+        
+        if not filename:
+            return
+        
+        try:
+            points = []
+            edges = []
+            
+            # 讀取檔案
+            with open(filename, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    parts = line.split()
+                    if len(parts) == 0:
+                        continue
+                    
+                    if parts[0] == 'P':
+                        # 點：P x y
+                        if len(parts) >= 3:
+                            try:
+                                x, y = float(parts[1]), float(parts[2])
+                                points.append((int(round(x)), int(round(y))))
+                            except ValueError:
+                                print(f"警告：第 {line_num} 行點座標格式錯誤: {line}")
+                                continue
+                    elif parts[0] == 'E':
+                        # 線段：E x1 y1 x2 y2
+                        if len(parts) >= 5:
+                            try:
+                                x1, y1 = float(parts[1]), float(parts[2])
+                                x2, y2 = float(parts[3]), float(parts[4])
+                                edges.append((int(round(x1)), int(round(y1)), 
+                                            int(round(x2)), int(round(y2))))
+                            except ValueError:
+                                print(f"警告：第 {line_num} 行線段座標格式錯誤: {line}")
+                                continue
+            
+            if len(points) == 0:
+                messagebox.showwarning("讀取失敗", "檔案中沒有找到任何點（P 開頭的行）")
+                return
+            
+            print(f"成功讀取: {len(points)} 個點, {len(edges)} 條線段")
+            
+            # 清空當前顯示
+            self.canvas.delete("all")
+            self.reset_state()
+            
+            # 繪製讀取的圖形
+            self.draw_imported_diagram(points, edges)
+            
+            # 更新統計資訊
+            stats_text = (
+                f"【從檔案讀取】\n"
+                f"檔案: {filename.split('/')[-1]}\n"
+                f"\n"
+                f"點數: {len(points)}\n"
+                f"線段數: {len(edges)}\n"
+            )
+            self.stats_display.config(text=stats_text)
+            
+            messagebox.showinfo("讀取成功", 
+                f"成功讀取並顯示 Voronoi Diagram\n\n"
+                f"輸入點數: {len(points)}\n"
+                f"線段數: {len(edges)}")
+            
+        except FileNotFoundError as e:
+            messagebox.showerror("錯誤", f"找不到檔案\n\n錯誤: {e}")
+        except ValueError as e:
+            messagebox.showerror("格式錯誤", f"檔案格式不正確\n\n錯誤: {e}")
+        except Exception as e:
+            messagebox.showerror("讀取失敗", f"無法讀取檔案\n\n錯誤: {e}")
+    
+    def draw_imported_diagram(self, points, edges):
+        """繪製從檔案讀取的 Voronoi Diagram
+        
+        Args:
+            points: 點的列表 [(x, y), ...]
+            edges: 線段的列表 [(x1, y1, x2, y2), ...]
+        """
+        # 繪製線段（中垂線）
+        for x1, y1, x2, y2 in edges:
+            self.canvas.create_line(
+                x1, y1, x2, y2,
+                fill="black",
+                width=2,
+                tags="voronoi_edge"
+            )
+        
+        # 繪製輸入點
+        for x, y in points:
+            self.canvas.create_oval(
+                x - 5, y - 5, x + 5, y + 5,
+                fill="blue",
+                outline="darkblue",
+                width=2,
+                tags="site"
+            )
+            # 標註座標
+            self.canvas.create_text(
+                x, y - 15,
+                text=f"({x},{y})",
+                font=("Arial", 8),
+                fill="blue",
+                tags="site_label"
+            )
     
     def reset_state(self):
         """重置計算狀態"""
@@ -1307,12 +1512,14 @@ class VoronoiGUI:
                 for edge in self.vd.edges:
                     if edge.start and edge.end:
                         clipped = clip_line_to_canvas(edge.start.x, edge.start.y, edge.end.x, edge.end.y)
-                    if clipped:
-                        x1, y1, x2, y2 = clipped
-                        # hyperplane 用橘色實線，其他邊用藍色細線
-                        color = "orange" if edge.is_hyperplane else "blue"
-                        width = 2 if edge.is_hyperplane else 1
-                        self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width)        # 繪製 Convex Hull（如果選項開啟）
+                        if clipped:
+                            x1, y1, x2, y2 = clipped
+                            # hyperplane 用橘色實線，其他邊用藍色細線
+                            color = "orange" if edge.is_hyperplane else "blue"
+                            width = 2 if edge.is_hyperplane else 1
+                            self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width)
+        
+        # 繪製 Convex Hull（如果選項開啟）
         if self.show_convex_hull.get():
             # 繪製左側凸包（藍色虛線）
             if step.left_hull and step.left_hull.edges:
@@ -1442,6 +1649,27 @@ class VoronoiGUI:
         
         # 遞迴分治
         self._divide_conquer_recursive(sorted_sites, 0)
+
+        # =========================================================
+        # 新增：最終全域清理
+        # 遞迴結束後，針對最上層合併可能殘留的孤立邊進行最後一次掃描
+        # =========================================================
+        print(f"===== 計算結束，執行最終孤立邊清理 =====")
+        final_removed = self.vd.remove_orphaned_edges()
+        if final_removed:
+            print(f"最終清理移除 {len(final_removed)} 條邊")
+            
+            # 如果有移除邊，記錄一個額外的步驟以便 Step-by-Step 觀察
+            step = MergeStep(
+                step_id=len(self.vd.merge_steps),
+                description=f"[最終清理] 移除 {len(final_removed)} 條殘留孤立邊",
+                left_sites=sorted_sites,
+                right_sites=[],
+                # 這裡簡單複製最後一個狀態的凸包
+                left_hull=self.vd.merge_steps[-1].merged_hull if self.vd.merge_steps else None,
+                merged_hull=self.vd.merge_steps[-1].merged_hull if self.vd.merge_steps else None
+            )
+            self.vd.merge_steps.append(step)
     
     def _divide_conquer_recursive(self, sites, depth):
         """
@@ -1454,8 +1682,8 @@ class VoronoiGUI:
         # 基本情況：1個點
         if n == 1:
             print(f"  {'  '*depth}[警告] 出現單一點的情況，這不應該發生！")
-            messagebox.showwarning("警告", 
-                f"遞迴過程中出現單一點，請檢查點分割邏輯\n點座標: ({sites[0].x:.1f}, {sites[0].y:.1f})")
+            # messagebox.showwarning("警告", 
+            #     f"遞迴過程中出現單一點，請檢查點分割邏輯\n點座標: ({sites[0].x:.1f}, {sites[0].y:.1f})")
             
             # 計算單點的凸包
             left_hull = compute_convex_hull([])
@@ -1486,6 +1714,36 @@ class VoronoiGUI:
         else:
             # 分割：找中間點
             mid = n // 2
+            
+            # 優化分割：如果中間點切在相同的 X 座標上，嘗試尋找更好的分割點
+            # 這樣可以確保左半部和右半部的 X 座標盡量不重疊，減少合併時的幾何錯誤
+            if sites[mid-1].x == sites[mid].x:
+                # 向左尋找第一個 X 座標不同的位置
+                l_split = mid
+                while l_split > 0 and sites[l_split-1].x == sites[l_split].x:
+                    l_split -= 1
+                
+                # 向右尋找第一個 X 座標不同的位置
+                r_split = mid
+                while r_split < n and sites[r_split-1].x == sites[r_split].x:
+                    r_split += 1
+                
+                # 評估哪個分割點更好（更接近中間，且有效）
+                valid_l = l_split > 0
+                valid_r = r_split < n
+                
+                if valid_l and valid_r:
+                    # 兩邊都有效，選離中間最近的
+                    if (mid - l_split) <= (r_split - mid):
+                        mid = l_split
+                    else:
+                        mid = r_split
+                elif valid_l:
+                    mid = l_split
+                elif valid_r:
+                    mid = r_split
+                # 如果都無效（所有點 X 都相同），則保持原來的 mid (按 Y 排序分割)
+
             left_sites = sites[:mid]
             right_sites = sites[mid:]
             
@@ -1511,12 +1769,11 @@ class VoronoiGUI:
             print(f"{'  '*depth}步驟1: 處理左半邊")
             self._divide_conquer_recursive(left_sites, depth + 1)
             
-            # 收集左半邊處理完成後的所有邊（深拷貝以保持狀態）
+            # 收集左半邊處理完成後的所有邊（包括該半邊內部的 hyperplane）
             left_edges_after = []
             for edge in self.vd.edges:
-                if edge.is_hyperplane:
-                    continue  # 跳過hyperplane邊
-                # 檢查邊是否屬於左半邊的站點
+                # 檢查邊是否完全屬於左半邊的站點
+                # 條件：site1 和 site2 都在 left_sites 中
                 if edge.site1 in left_sites and edge.site2 in left_sites:
                     left_edges_after.append(edge.copy_snapshot())
             
@@ -1539,12 +1796,11 @@ class VoronoiGUI:
             print(f"{'  '*depth}步驟2: 處理右半邊")
             self._divide_conquer_recursive(right_sites, depth + 1)
             
-            # 收集右半邊處理完成後的所有邊（深拷貝以保持狀態）
+            # 收集右半邊處理完成後的所有邊（包括該半邊內部的 hyperplane）
             right_edges_after = []
             for edge in self.vd.edges:
-                if edge.is_hyperplane:
-                    continue  # 跳過hyperplane邊
-                # 檢查邊是否屬於右半邊的站點
+                # 檢查邊是否完全屬於右半邊的站點
+                # 條件：site1 和 site2 都在 right_sites 中
                 if edge.site1 in right_sites and edge.site2 in right_sites:
                     right_edges_after.append(edge.copy_snapshot())
             
@@ -1565,6 +1821,7 @@ class VoronoiGUI:
             
             # 步驟3a: 顯示左右半邊外心截斷完成後的結果（用顏色區分）
             print(f"{'  '*depth}步驟3a: 顯示左右半邊外心截斷結果")
+            # 重新收集當前的左右邊（因為之前已經拷貝過了）
             all_left_edges = [e.copy_snapshot() for e in left_edges_after]
             all_right_edges = [e.copy_snapshot() for e in right_edges_after]
             
@@ -1591,7 +1848,7 @@ class VoronoiGUI:
             print(f"{'  '*depth}合併：左 {len(left_sites)} 點與右 {len(right_sites)} 點")
             
             # 計算 hyperplane 的端點
-            hyperplane_points = compute_hyperplane_points(left_sites, right_sites, merged_hull)
+            hyperplane_points = compute_hyperplane_points(left_sites, right_sites, merged_hull, left_hull, right_hull)
             hyperplane = None
             
             if hyperplane_points:
@@ -1646,8 +1903,10 @@ class VoronoiGUI:
                 print(f"{'  '*depth}  -> 當前層級共有 {len(current_level_edges)} 條邊可能與 hyperplane 碰撞")
                 
                 # 截斷 hyperplane 找到第一個碰撞點
+                # 修正：傳入 active_sites=[point1, point2]
                 new_end, intersected_edges, all_intersected_sites = truncate_hyperplane(
-                    temp_start, temp_end, current_level_edges, left_sites, right_sites, depth
+                    temp_start, temp_end, current_level_edges, left_sites, right_sites, 
+                    active_sites=[point1, point2], depth=depth
                 )
                 
                 # 確定第一段 hyperplane 的起始點和結束點
@@ -1745,18 +2004,34 @@ class VoronoiGUI:
             else:
                 print(f"{'  '*depth}  -> 無法計算 hyperplane")
             
+            # =================================================================
+            # 【關鍵修正】 在合併步驟結束前，強制清理所有孤立邊
+            # 這一步確保了即使沒有進入 continue_hyperplane_from_intersection，
+            # 由 truncate_hyperplane 產生的孤立線段也會被清除。
+            # =================================================================
+            print(f"{'  '*depth}  [Merge End] 清理本層級產生的孤立邊...")
+            self.vd.remove_orphaned_edges()
+            # =================================================================
+            
             # 收集當前所有邊的最終狀態（包括被hyperplane截斷後的邊）
             final_left_edges = []
             final_right_edges = []
-            hyperplane_edges = []
+            final_hyperplane_edges = []
             
             for edge in self.vd.edges:
-                if edge.is_hyperplane:
-                    hyperplane_edges.append(edge.copy_snapshot())
-                elif edge.site1 in left_sites and edge.site2 in left_sites:
+                # 只收集屬於當前這個合併層級的邊
+                if edge.site1 in left_sites and edge.site2 in left_sites:
+                    # 左半邊的邊
                     final_left_edges.append(edge.copy_snapshot())
                 elif edge.site1 in right_sites and edge.site2 in right_sites:
+                    # 右半邊的邊
                     final_right_edges.append(edge.copy_snapshot())
+                elif edge.is_hyperplane:
+                    # 檢查這個 hyperplane 是否是當前層級的（連接左右兩側的站點）
+                    # 如果 site1 在左側且 site2 在右側，或反之
+                    if ((edge.site1 in left_sites and edge.site2 in right_sites) or
+                        (edge.site1 in right_sites and edge.site2 in left_sites)):
+                        final_hyperplane_edges.append(edge.copy_snapshot())
             
             merge_step = MergeStep(
                 step_id=len(self.vd.merge_steps),
@@ -1767,7 +2042,7 @@ class VoronoiGUI:
                 right_hull=right_hull,
                 merged_hull=merged_hull,
                 left_edges=final_left_edges,
-                right_edges=final_right_edges + hyperplane_edges
+                right_edges=final_right_edges + final_hyperplane_edges
             )
             self.vd.merge_steps.append(merge_step)
     
@@ -1938,7 +2213,6 @@ class VoronoiGUI:
     def _truncate_edge_with_circumcenter(self, edge, center_vertex, depth):
         """
         使用外心截斷中垂線
-        
         邏輯：
         1. 計算起始點、結束點、外心在法向量線上的符號
         2. 保留與外心異號的端點
@@ -2305,6 +2579,74 @@ class VoronoiGUI:
         edge.end = end_vertex
         
         return edge
+    
+    def export_to_text_file(self, filename="output.txt"):
+        """
+        將 Voronoi Diagram 結果輸出到文字檔案
+        
+        格式：
+        - P x y：輸入點座標
+        - E x1 y1 x2 y2：線段（中垂線和 hyperplane）
+        
+        排序規則：
+        - 點：按 lexical order (x, y)
+        - 線段：保證 x1≤x2 或 (x1=x2 且 y1≤y2)，然後按 (x1, y1, x2, y2) lexical order 排序
+        """
+        # 收集所有輸入點
+        points = []
+        for site in self.vd.sites:
+            points.append((int(round(site.x)), int(round(site.y))))
+        
+        # 按 lexical order 排序點
+        points.sort()
+        
+        # 收集所有線段（只包含有效的邊，不包含孤立邊）
+        segments = []
+        for edge in self.vd.edges:
+            # 確保邊有兩個端點
+            if edge.start is None or edge.end is None:
+                continue
+            
+            # 使用與繪製時相同的裁剪算法
+            clipped = clip_line_to_canvas(edge.start.x, edge.start.y, edge.end.x, edge.end.y)
+            if clipped:
+                x1, y1, x2, y2 = clipped
+                # 四捨五入到整數
+                x1, y1 = int(round(x1)), int(round(y1))
+                x2, y2 = int(round(x2)), int(round(y2))
+                
+                # 確保 x1≤x2，或 x1=x2 且 y1≤y2
+                if x1 > x2 or (x1 == x2 and y1 > y2):
+                    x1, y1, x2, y2 = x2, y2, x1, y1
+                
+                segments.append((x1, y1, x2, y2))
+        
+        # 移除重複的線段
+        segments = list(set(segments))
+        
+        # 按 lexical order 排序線段
+        segments.sort()
+        
+        # 寫入檔案
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                # 寫入點
+                for x, y in points:
+                    f.write(f"P {x} {y}\n")
+                
+                # 寫入線段
+                for x1, y1, x2, y2 in segments:
+                    f.write(f"E {x1} {y1} {x2} {y2}\n")
+            
+            print(f"成功輸出到檔案: {filename}")
+            print(f"  輸入點數: {len(points)}")
+            print(f"  線段數: {len(segments)}")
+            
+            messagebox.showinfo("輸出成功", f"已將結果輸出到 {filename}\n\n輸入點數: {len(points)}\n線段數: {len(segments)}")
+            
+        except Exception as e:
+            print(f"輸出檔案時發生錯誤: {e}")
+            messagebox.showerror("輸出失敗", f"無法寫入檔案 {filename}\n\n錯誤: {e}")
 
 
 # 主程式入口
