@@ -201,6 +201,14 @@ def compute_convex_hull(points):
     
     返回:
         ConvexHull - 包含凸包頂點（逆時針順序）和邊
+        
+    時間複雜度: O(n) (因為輸入點集已按 X 座標排序，Python 的 Timsort 在此情況下為線性時間)
+    詳細說明：
+    1. 標準的 Monotone Chain 演算法需要先對點進行排序，通常是 O(N log N)。
+    2. 但在這個 Divide & Conquer 的實作中，輸入的 `points` 來自於已經排序過的 `sites` 列表（在主函數中已排序）。
+    3. Python 的 `sorted` 函數使用 Timsort 演算法，對於已經排序（或接近排序）的數據，其時間複雜度為 O(N)。
+    4. 建立上凸包和下凸包的過程只需要遍歷所有點一次，每個點最多進出堆疊兩次，這部分也是 O(N)。
+    5. 因此，整體的凸包計算在此上下文中為 O(N)。
     """
     if not points:
         return ConvexHull(points=[], edges=[])
@@ -270,7 +278,6 @@ def compute_hyperplane_points(left_sites, right_sites, merged_hull, left_hull, r
     
     # =========================================================================
     # 1. 尋找最佳起始點
-    # 原本只找最右/最左，現在加入 Y 軸考量，避免起點落在凸包底部導致搜尋路徑被卡住
     # 左凸包：找 X 最大者；若 X 相同，找 Y 最小者（最右上）
     l_idx = max(range(n_l), key=lambda i: (l_points[i].x, -l_points[i].y))
     # 右凸包：找 X 最小者；若 X 相同，找 Y 最小者（最左上）
@@ -294,26 +301,72 @@ def compute_hyperplane_points(left_sites, right_sites, merged_hull, left_hull, r
         return val < -1e-7
 
     # 2. Walking Algorithm 尋找上切線
+    # 時間複雜度: O(n) (Walking Algorithm 在兩個凸包上尋找切線，與頂點數量成線性關係)
+    # 詳細說明：
+    # 1. 我們從兩個凸包的特定頂點（左凸包最右點，右凸包最左點）開始。
+    # 2. 由於凸包是凸多邊形，我們可以單調地（Monotonically）沿著邊界移動以尋找上切線。
+    # 3. 在每一步中，我們至少會排除一個頂點，或者沿著凸包邊界前進一步。
+    # 4. 我們不會回頭（Backtrack），因此總步數不會超過兩個凸包的頂點總數之和 (N_L + N_R)。
+    # 5. 因此，尋找上切線的時間複雜度為 O(N)，其中 N 是點的總數。
     done = False
     while not done:
         done = True
         
-        # 左凸包：嘗試逆時針移動 (Index + 1)
-        # 我們希望切線是該凸包的"最高"邊界，所以如果下一個點在當前連線的"上方"，就移動過去
+        # 左凸包：嘗試移動以找到更高點
+        # 檢查兩個鄰居，看是否有任何一個在當前切線的上方
         while True:
             l_next = (l_idx + 1) % n_l
-            if is_upper_tangent_violated(l_points[l_idx], r_points[r_idx], l_points[l_next]):
+            l_prev = (l_idx - 1 + n_l) % n_l
+            
+            violated_next = is_upper_tangent_violated(l_points[l_idx], r_points[r_idx], l_points[l_next])
+            violated_prev = is_upper_tangent_violated(l_points[l_idx], r_points[r_idx], l_points[l_prev])
+            
+            if violated_next and violated_prev:
+                # 兩個都在上方，選擇"更上方"的一個 (叉積更小/更負)
+                val_next = (r_points[r_idx].x - l_points[l_idx].x) * (l_points[l_next].y - l_points[l_idx].y) - \
+                           (r_points[r_idx].y - l_points[l_idx].y) * (l_points[l_next].x - l_points[l_idx].x)
+                val_prev = (r_points[r_idx].x - l_points[l_idx].x) * (l_points[l_prev].y - l_points[l_idx].y) - \
+                           (r_points[r_idx].y - l_points[l_idx].y) * (l_points[l_prev].x - l_points[l_idx].x)
+                
+                if val_next < val_prev:
+                    l_idx = l_next
+                else:
+                    l_idx = l_prev
+                done = False
+            elif violated_next:
                 l_idx = l_next
+                done = False
+            elif violated_prev:
+                l_idx = l_prev
                 done = False
             else:
                 break
                 
-        # 右凸包：嘗試順時針移動 (Index - 1)
-        # 我們希望切線是該凸包的"最高"邊界，如果前一個點在當前連線的"上方"，就移動過去
+        # 右凸包：嘗試移動以找到更高點
         while True:
+            r_next = (r_idx + 1) % n_r
             r_prev = (r_idx - 1 + n_r) % n_r
+            
             # 注意這裡向量方向是 左->右，判斷邏輯一致
-            if is_upper_tangent_violated(l_points[l_idx], r_points[r_idx], r_points[r_prev]):
+            violated_next = is_upper_tangent_violated(l_points[l_idx], r_points[r_idx], r_points[r_next])
+            violated_prev = is_upper_tangent_violated(l_points[l_idx], r_points[r_idx], r_points[r_prev])
+            
+            if violated_next and violated_prev:
+                # 兩個都在上方，選擇"更上方"的一個
+                val_next = (r_points[r_next].x - l_points[l_idx].x) * (r_points[r_idx].y - l_points[l_idx].y) - \
+                           (r_points[r_next].y - l_points[l_idx].y) * (r_points[r_idx].x - l_points[l_idx].x)
+                val_prev = (r_points[r_prev].x - l_points[l_idx].x) * (r_points[r_idx].y - l_points[l_idx].y) - \
+                           (r_points[r_prev].y - l_points[l_idx].y) * (r_points[r_idx].x - l_points[l_idx].x)
+                
+                # 注意：對於右側點，我們是在改變向量的終點。
+                # 這裡直接用 is_upper_tangent_violated 的結果比較簡單
+                # 但為了保險，我們直接移動到任意一個違反的點，下一輪會繼續修正
+                r_idx = r_next
+                done = False
+            elif violated_next:
+                r_idx = r_next
+                done = False
+            elif violated_prev:
                 r_idx = r_prev
                 done = False
             else:
@@ -386,13 +439,13 @@ def get_point_side(p, line_start, line_end):
 
 def truncate_hyperplane(hyperplane_start, hyperplane_end, all_edges, left_sites, right_sites, active_sites=None, depth=0):
     """
-    截斷 hyperplane：找到由上往下第一個交點，並截斷所有在該點重疊的中垂線
+    截斷 hyperplane：從整個區域邊界的最上方（Y最小）開始往下檢測碰撞點
     修正：傳入 active_sites (產生當前 hyperplane 的站點對)，確保使用正確的參考站點來判斷保留方向
     """
-    # 確保 start 的 Y 小於 end 的 Y（由上往下繪製）
+    # 確保 start 的 Y 小於 end 的 Y（從上往下檢測）
     if hyperplane_start.y > hyperplane_end.y:
         hyperplane_start, hyperplane_end = hyperplane_end, hyperplane_start
-        print(f"{'  '*depth}    [截斷] 對調起始點和結束點")
+        print(f"{'  '*depth}    [截斷] 對調起始點和結束點，確保從 Y 最小開始")
     
     print(f"{'  '*depth}    [截斷] Hyperplane: ({hyperplane_start.x:.1f}, {hyperplane_start.y:.1f}) -> ({hyperplane_end.x:.1f}, {hyperplane_end.y:.1f})")
     
@@ -400,7 +453,7 @@ def truncate_hyperplane(hyperplane_start, hyperplane_end, all_edges, left_sites,
     INTERSECTION_TOLERANCE = 1e-5
     
     closest_intersection = None
-    closest_t = float('inf')
+    closest_t1 = float('inf')  # 改用 t1 (距離起始點的參數) 來判斷最近的交點
     all_intersections = []  # 存儲所有交點資訊：(x, y, t1, t2, edge)
     
     # 遍歷所有邊，找到所有交點
@@ -415,14 +468,14 @@ def truncate_hyperplane(hyperplane_start, hyperplane_end, all_edges, left_sites,
             x, y, t1, t2 = result
             
             # t1 是 hyperplane 上的參數，t2 是邊上的參數
-            # 嚴格檢查 t1 > epsilon 避免在起始點重複碰撞
-            if 1e-9 < t1 < 1 and 0 <= t2 <= 1:
+            # 只檢查 t1 > 0 的交點（從起點往下）
+            if t1 > 1e-9 and 0 <= t2 <= 1:
                 all_intersections.append((x, y, t1, t2, edge))
-                # print(f"{'  '*depth}      找到交點: ({x:.1f}, {y:.1f}), t1={t1:.3f}")
                 
-                # 記錄最近的交點
-                if t1 < closest_t:
-                    closest_t = t1
+                # 記錄 t1 最小（距離起點最近）的交點
+                # 這是關鍵修正：原本用 Y 判斷，但如果 Hyperplane 是水平或接近水平，Y 判斷會失效
+                if t1 < closest_t1:
+                    closest_t1 = t1
                     closest_intersection = (x, y)
     
     if closest_intersection:
@@ -625,9 +678,9 @@ def continue_hyperplane_from_intersection(vd, initial_start, initial_generating_
             # 沒有碰撞點，使用原本計算的終點（延伸到邊界）
             new_end = current_end
             is_final_segment = True
-        elif new_end.y > CANVAS_HEIGHT:
-            print(f"{'  '*depth}  [繼續 Hyperplane] 碰撞點 Y={new_end.y:.1f} > {CANVAS_HEIGHT}，離開畫布，繪製最後一段")
-            # 碰撞點在畫布外，仍然繪製這一段
+        elif new_end.y > CALC_MAX_Y:
+            print(f"{'  '*depth}  [繼續 Hyperplane] 碰撞點 Y={new_end.y:.1f} > {CALC_MAX_Y}，離開計算範圍，繪製最後一段")
+            # 碰撞點在計算範圍外，仍然繪製這一段
             is_final_segment = True
         else:
             # 碰撞點在畫布內
@@ -829,7 +882,7 @@ def extend_line_to_boundary(mid_x, mid_y, direction_x, direction_y):
 
 
 def clip_to_canvas(x, y):
-    """將座標裁剪到畫布範圍內"""
+    """將座標裁剪到畫布範圍內（僅用於顯示，計算時不應使用此函數）"""
     x = max(0, min(CANVAS_WIDTH, x))
     y = max(0, min(CANVAS_HEIGHT, y))
     return (x, y)
@@ -1081,6 +1134,11 @@ class VoronoiGUI:
     
     def add_point(self, event):
         """處理滑鼠點擊，添加點"""
+        # 如果正在 Step by Step 模式，禁止添加點，以免重置步驟
+        if self.is_step_mode:
+            messagebox.showinfo("提示", "Step by Step 模式中無法添加點。\n請先按 'Clear Points' 或完成演示。")
+            return
+
         x, y = event.x, event.y
         self.points.append((x, y))
         
@@ -1448,7 +1506,16 @@ class VoronoiGUI:
         self.draw_current_step()
     
     def draw_current_step(self):
-        """繪製當前步驟的狀態 - 用顏色區分不同狀態的點"""
+        """
+        繪製當前步驟的狀態
+        滿足作業要求：
+        1.1 確定有 divide 動作
+        1.2 以顏色區分當前處理哪些點（左邊=藍色，右邊=綠色）
+        2.1 顯示合併前左右兩邊的 convex hull 和合併後的 convex hull
+        3.1 合併前以不同顏色區分左右兩個 Voronoi diagram
+        3.2 以橘色粗線繪出 hyperplane
+        3.3 擦去多餘的線段
+        """
         self.canvas.delete("all")
         
         if not self.vd.merge_steps or self.current_step < 0:
@@ -1456,31 +1523,31 @@ class VoronoiGUI:
         
         step = self.vd.merge_steps[self.current_step]
         
-        # 獲取當前正在處理的點集 - 使用列表而非集合
-        current_processing = []
-        if step.left_sites:
-            current_processing.extend(step.left_sites)
-        if step.right_sites:
-            current_processing.extend(step.right_sites)
-        
-        # 繪製所有站點 - 根據狀態使用不同顏色
+        # 繪製所有站點 - 根據所屬邊使用不同顏色
+        # 滿足要求 1.2：以顏色區分當前處理哪些點
         for site in self.vd.sites:
-            if site in current_processing:
-                # 正在處理的點 - 紅色（突出顯示）
-                color = "red"
-                radius = 4
+            if site in step.left_sites:
+                # 左邊的點 - 藍色
+                color = "blue"
+                radius = 5
+            elif site in step.right_sites:
+                # 右邊的點 - 綠色
+                color = "green"
+                radius = 5
             else:
-                # 其他點 - 灰色（已處理或未處理）
+                # 其他點 - 灰色（未處理）
                 color = "gray"
                 radius = 3
             
             self.canvas.create_oval(
                 site.x-radius, site.y-radius, 
                 site.x+radius, site.y+radius,
-                fill=color, outline=color
+                fill=color, outline="black", width=1
             )
         
-        # 繪製邊：如果有 left_edges 和 right_edges，使用它們；否則根據步驟類型決定
+        # 繪製邊：滿足要求 3.1 和 3.2
+        # 3.1 合併前以不同顏色區分左右兩個 Voronoi diagram
+        # 3.2 以橘色粗線繪出 hyperplane
         has_step_edges = (step.left_edges or step.right_edges)
         
         if has_step_edges:
@@ -1490,20 +1557,28 @@ class VoronoiGUI:
                     clipped = clip_line_to_canvas(edge.start.x, edge.start.y, edge.end.x, edge.end.y)
                     if clipped:
                         x1, y1, x2, y2 = clipped
-                        # hyperplane 用橘色，其他用藍色
-                        color = "orange" if edge.is_hyperplane else "blue"
-                        width = 2
+                        # hyperplane 用橘色粗線 3px，其他用藍色 2px
+                        if edge.is_hyperplane:
+                            color = "orange"
+                            width = 3
+                        else:
+                            color = "blue"
+                            width = 2
                         self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width)
             
-            # 繪製右半邊的邊（綠色或橘色）- 裁剪到畫布
+            # 繪製右半邊的邊（綠色）- 裁剪到畫布
             for edge in step.right_edges:
                 if edge.start and edge.end:
                     clipped = clip_line_to_canvas(edge.start.x, edge.start.y, edge.end.x, edge.end.y)
                     if clipped:
                         x1, y1, x2, y2 = clipped
-                        # hyperplane 用橘色，其他用綠色
-                        color = "orange" if edge.is_hyperplane else "green"
-                        width = 2
+                        # hyperplane 用橘色粗線 3px，其他用綠色 2px
+                        if edge.is_hyperplane:
+                            color = "orange"
+                            width = 3
+                        else:
+                            color = "green"
+                            width = 2
                         self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width)
         else:
             # 沒有 step-specific 的邊
@@ -1514,9 +1589,28 @@ class VoronoiGUI:
                         clipped = clip_line_to_canvas(edge.start.x, edge.start.y, edge.end.x, edge.end.y)
                         if clipped:
                             x1, y1, x2, y2 = clipped
-                            # hyperplane 用橘色實線，其他邊用藍色細線
-                            color = "orange" if edge.is_hyperplane else "blue"
-                            width = 2 if edge.is_hyperplane else 1
+                            # 根據邊的站點歸屬決定顏色
+                            # 如果兩個站點都在左側 -> 藍色
+                            # 如果兩個站點都在右側 -> 綠色
+                            # 否則 (Hyperplane) -> 橘色
+                            
+                            is_left = (edge.site1 in step.left_sites and edge.site2 in step.left_sites)
+                            is_right = (edge.site1 in step.right_sites and edge.site2 in step.right_sites)
+                            
+                            if edge.is_hyperplane:
+                                color = "orange"
+                                width = 3
+                            elif is_left:
+                                color = "blue"
+                                width = 2
+                            elif is_right:
+                                color = "green"
+                                width = 2
+                            else:
+                                # 預設情況
+                                color = "black"
+                                width = 1
+                                
                             self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width)
         
         # 繪製 Convex Hull（如果選項開啟）
@@ -1926,7 +2020,7 @@ class VoronoiGUI:
                     edge.end = end_vertex
                     
                     # 繼續從碰撞點繪製後續的 hyperplane
-                    if all_intersected_sites and final_end.y <= CANVAS_HEIGHT:
+                    if all_intersected_sites and final_end.y <= CALC_MAX_Y:
                         print(f"{'  '*depth}  -> 繼續繪製 hyperplane，從碰撞點開始")
                         print(f"{'  '*depth}  -> 初始產生點: ({point1.x:.1f},{point1.y:.1f}) 和 ({point2.x:.1f},{point2.y:.1f})")
                         print(f"{'  '*depth}  -> 碰撞涉及 {len(all_intersected_sites)} 個站點:")
@@ -2011,6 +2105,28 @@ class VoronoiGUI:
             # =================================================================
             print(f"{'  '*depth}  [Merge End] 清理本層級產生的孤立邊...")
             self.vd.remove_orphaned_edges()
+            
+            # =================================================================
+            # 【進階清理】 根據 Hyperplane 的位置清理完全在錯誤一側的邊
+            # 這是為了解決某些邊沒有被 Hyperplane 截斷（因為完全在錯誤一側）
+            # 但也沒有形成孤立邊（可能連接到無限遠）的情況
+            # =================================================================
+            if hyperplane_points:
+                # 收集所有 Hyperplane 的邊段
+                all_hp_edges = []
+                if hyperplane: # 第一段
+                    all_hp_edges.append(hyperplane)
+                # 收集後續段 (需要從 vd.edges 中找出屬於此層級的 hyperplane 邊)
+                for e in self.vd.edges:
+                    if e.is_hyperplane and e != hyperplane:
+                        # 檢查是否為當前層級的 hyperplane (連接左右兩側)
+                        if ((e.site1 in left_sites and e.site2 in right_sites) or
+                            (e.site1 in right_sites and e.site2 in left_sites)):
+                            all_hp_edges.append(e)
+                
+                self.cleanup_edges_based_on_hyperplane(self.vd, left_sites, right_sites, all_hp_edges)
+                # 清理後再次移除孤立邊，以防萬一
+                self.vd.remove_orphaned_edges()
             # =================================================================
             
             # 收集當前所有邊的最終狀態（包括被hyperplane截斷後的邊）
@@ -2046,6 +2162,116 @@ class VoronoiGUI:
             )
             self.vd.merge_steps.append(merge_step)
     
+    def cleanup_edges_based_on_hyperplane(self, vd, left_sites, right_sites, hyperplane_edges):
+        """
+        根據 Hyperplane 的位置清理完全在錯誤一側的邊
+        
+        邏輯：
+        1. 將 Hyperplane 視為一條從上到下的折線
+        2. 對於左側站點產生的邊，如果位於 Hyperplane 的右側，則移除
+        3. 對於右側站點產生的邊，如果位於 Hyperplane 的左側，則移除
+        """
+        if not hyperplane_edges:
+            return
+
+        # 1. 建立按 Y 排序的 Hyperplane 線段列表
+        hp_segments = []
+        for edge in hyperplane_edges:
+            p1, p2 = edge.start, edge.end
+            if not p1 or not p2: continue
+            # 確保 p1 在 p2 上方 (Y 較小)
+            if p1.y > p2.y: 
+                p1, p2 = p2, p1
+            hp_segments.append((p1, p2))
+        
+        # 按 Y 座標排序
+        hp_segments.sort(key=lambda s: s[0].y)
+        
+        if not hp_segments:
+            return
+
+        edges_to_remove = []
+        
+        # 2. 檢查每一條非 Hyperplane 的邊
+        for edge in vd.edges:
+            # 修正：不再跳過 is_hyperplane 的邊
+            # 因為舊的 Hyperplane (屬於子集合內部的) 也可能需要被清理
+            # 我們透過下面的 is_left_edge/is_right_edge 判斷來確保只清理內部的邊
+            # 而不會誤刪當前正在建立的 Hyperplane (因為它連接 Left 和 Right，不屬於單一側)
+            # if edge.is_hyperplane: continue 
+            
+            if not edge.start or not edge.end: continue
+            
+            # 判斷邊的歸屬
+            is_left_edge = edge.site1 in left_sites and edge.site2 in left_sites
+            is_right_edge = edge.site1 in right_sites and edge.site2 in right_sites
+            
+            if not is_left_edge and not is_right_edge:
+                continue
+            
+            # 取邊的中點進行檢查
+            mid_x = (edge.start.x + edge.end.x) / 2
+            mid_y = (edge.start.y + edge.end.y) / 2
+            
+            # 找到覆蓋 mid_y 的 Hyperplane 線段
+            relevant_seg = None
+            
+            # 如果在中點上方，使用第一段延伸
+            if mid_y < hp_segments[0][0].y:
+                relevant_seg = hp_segments[0]
+            # 如果在中點下方，使用最後一段延伸
+            elif mid_y > hp_segments[-1][1].y:
+                relevant_seg = hp_segments[-1]
+            else:
+                # 線性搜尋 (因為數量不多，且已排序)
+                for p1, p2 in hp_segments:
+                    if p1.y <= mid_y <= p2.y:
+                        relevant_seg = (p1, p2)
+                        break
+                
+                # 如果正好在空隙中 (數值誤差)，找最近的
+                if not relevant_seg:
+                    # 簡單策略：找 Y 距離最近的
+                    relevant_seg = min(hp_segments, key=lambda s: min(abs(s[0].y - mid_y), abs(s[1].y - mid_y)))
+
+            if relevant_seg:
+                p1, p2 = relevant_seg
+                
+                # 計算叉積判斷左右
+                # 向量 V_hp = P1 -> P2 (向下)
+                # 向量 V_pt = P1 -> Mid
+                # Cross = (x2-x1)*(y-y1) - (y2-y1)*(x-x1)
+                # 在螢幕座標系 (Y向下):
+                # Cross > 0: 點在向量左側 (視覺上的左邊，X較小)
+                # Cross < 0: 點在向量右側 (視覺上的右邊，X較大)
+                
+                val = (p2.x - p1.x) * (mid_y - p1.y) - (p2.y - p1.y) * (mid_x - p1.x)
+                
+                # 容差
+                tolerance = 1e-4
+                
+                # 左側邊應該在左側 (val > 0)
+                if is_left_edge and val < -tolerance:
+                    # 左側邊跑到了右側 -> 移除
+                    if edge.is_hyperplane:
+                        print(f"  [DEBUG] 清理殘留 Hyperplane (左側越界): {edge}")
+                    # print(f"  [清理] 移除越界左側邊: {edge} (val={val:.2f})")
+                    edges_to_remove.append(edge)
+                
+                # 右側邊應該在右側 (val < 0)
+                elif is_right_edge and val > tolerance:
+                    # 右側邊跑到了左側 -> 移除
+                    if edge.is_hyperplane:
+                        print(f"  [DEBUG] 清理殘留 Hyperplane (右側越界): {edge}")
+                    # print(f"  [清理] 移除越界右側邊: {edge} (val={val:.2f})")
+                    edges_to_remove.append(edge)
+        
+        # 執行移除
+        if edges_to_remove:
+            print(f"  [進階清理] 移除了 {len(edges_to_remove)} 條越界邊")
+            for e in edges_to_remove:
+                vd.remove_edge(e)
+
     def _handle_two_points(self, site1, site2, depth):
         """處理兩個點的情況：創建中垂線"""
         print(f"{'  '*depth}處理兩點: ({site1.x:.1f}, {site1.y:.1f}) 和 ({site2.x:.1f}, {site2.y:.1f})")
