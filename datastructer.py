@@ -1,297 +1,591 @@
-#資料結構部分
+# $LAN=PYTHON$
+# M143040047 吳少棠
 
+# 資料結構部分
+import math
+from typing import List, Tuple, Optional, Set
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class PointType(Enum):
+    """點的類型"""
+    SITE = "site"  # 原始輸入點（站點）
+    VORONOI_VERTEX = "voronoi_vertex"  # Voronoi 頂點（中垂線交點）
+
+
+@dataclass
 class Point:
-    def __init__(self, x, y):
-        self.x = x
-        self.y = y
-    
-    def __eq__(self, other):
-        if not isinstance(other, Point):
-            return False
-        return self.x == other.x and self.y == other.y
+    """
+    座標點基礎類別
+    用於表示平面上的點
+    """
+    x: float
+    y: float
+    point_type: PointType = PointType.SITE
+    id: Optional[int] = None  # 用於追蹤和識別
     
     def __hash__(self):
         return hash((self.x, self.y))
     
+    def __eq__(self, other):
+        if not isinstance(other, Point):
+            return False
+        return math.isclose(self.x, other.x, abs_tol=1e-9) and \
+               math.isclose(self.y, other.y, abs_tol=1e-9)
+    
     def __repr__(self):
-        return f"Point({self.x}, {self.y})"
+        return f"Point({self.x:.2f}, {self.y:.2f}, {self.point_type.value})"
+    
+    def distance_to(self, other: 'Point') -> float:
+        """計算到另一點的距離"""
+        return math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
+    
+    def to_tuple(self) -> Tuple[float, float]:
+        """轉換為座標tuple"""
+        return (self.x, self.y)
 
-class VoronoiVertex:
-    def __init__(self, x, y):
-        self.x = x
-        self.y = y
-        self.edges = []  # 連接到這個 vertex 的中垂線列表
 
-    def add_edge(self, edge):
-        self.edges.append(edge)
+@dataclass
+class VoronoiSite(Point):
+    """
+    Voronoi Site（輸入的原始點）
+    這些是需要進行 Voronoi 分割的點
+    """
+    edges: List['VoronoiEdge'] = field(default_factory=list)  # 此點產生的所有中垂線
+    cell: Optional['VoronoiCell'] = None  # 此點的 Voronoi cell
+    
+    def __post_init__(self):
+        self.point_type = PointType.SITE
+        if not self.edges:
+            self.edges = []
+    
+    def __hash__(self):
+        # 使用座標和 id 來雜湊，忽略可變字段
+        return hash((self.x, self.y, self.id))
+    
+    def __eq__(self, other):
+        if not isinstance(other, VoronoiSite):
+            return False
+        # 如果有 id，比較 id；否則比較座標
+        if self.id is not None and other.id is not None:
+            return self.id == other.id
+        return math.isclose(self.x, other.x, abs_tol=1e-9) and \
+               math.isclose(self.y, other.y, abs_tol=1e-9)
+    
+    def add_edge(self, edge: 'VoronoiEdge'):
+        """添加與此站點相關的邊"""
+        if edge not in self.edges:
+            self.edges.append(edge)
+    
+    def remove_edge(self, edge: 'VoronoiEdge'):
+        """移除與此站點相關的邊"""
+        if edge in self.edges:
+            self.edges.remove(edge)
 
+
+@dataclass
+class VoronoiVertex(Point):
+    """
+    Voronoi Vertex（中垂線的交點）
+    
+    類型：
+    1. 外心（Circumcenter）：三個站點的中垂線交點，在處理三角形時創建
+    2. 交匯點（Junction）：Hyperplane 截斷產生的交點，連接被截斷的邊和前後兩段 hyperplane
+    """
+    incident_edges: List['VoronoiEdge'] = field(default_factory=list)  # 相交於此點的邊
+    sites: List[VoronoiSite] = field(default_factory=list)  # 形成此頂點的站點
+    is_junction: bool = False  # 是否為交匯點（Hyperplane 碰撞產生）
+    
+    def __post_init__(self):
+        self.point_type = PointType.VORONOI_VERTEX
+        if not self.incident_edges:
+            self.incident_edges = []
+        if not self.sites:
+            self.sites = []
+    
+    def degree(self) -> int:
+        """返回此頂點的度數（相交的邊數）"""
+        return len(self.incident_edges)
+    
+    def is_circumcenter(self) -> bool:
+        """判斷是否為外心（三個站點形成）"""
+        return len(self.sites) == 3 and not self.is_junction
+    
+    def is_orphanable(self) -> bool:
+        """判斷是否可能成為孤立點（外心或交匯點，初始度數為 3）"""
+        return self.is_circumcenter() or self.is_junction
+
+
+@dataclass
 class VoronoiEdge:
-    def __init__(self, site1, site2, is_hyperplane=False):
-        self.site1 = site1  # 平分的第一個點
-        self.site2 = site2  # 平分的第二個點
-        self.start_vertex = None
-        self.end_vertex = None
-        self.is_infinite = False
-        self.is_hyperplane = is_hyperplane  # 標記是否為hyperplane（midAB線段）
-        self.slope = self._calculate_slope()  # 中垂線的斜率
-        self.midpoint = self._calculate_midpoint()  # 中垂線經過的中點
+    """
+    Voronoi Edge（中垂線）
+    兩個站點之間的垂直平分線（或其一部分）
+    """
+    site1: VoronoiSite  # 產生此邊的第一個站點
+    site2: VoronoiSite  # 產生此邊的第二個站點
+    _start: Optional[VoronoiVertex] = field(default=None, init=False, repr=False)  # 內部起始頂點
+    _end: Optional[VoronoiVertex] = field(default=None, init=False, repr=False)  # 內部結束頂點
+    is_hyperplane: bool = False  # 是否為 divide-conquer 過程中的分割線
+    is_infinite: bool = False  # 是否為無限延伸的邊
+    id: Optional[int] = None
+    
+    # 中垂線的數學參數
+    slope: Optional[float] = None  # 斜率（垂直線為 None）
+    intercept: Optional[float] = None  # y 截距
+    is_vertical: bool = False  # 是否為垂直線
+    vertical_x: Optional[float] = None  # 垂直線的 x 座標
+    
+    # 法向量線（Normal Line）參數：通過 site1 和 site2 的直線
+    # 方程式: normal_a * x + normal_b * y + normal_c = 0
+    normal_a: Optional[float] = None
+    normal_b: Optional[float] = None
+    normal_c: Optional[float] = None
+    
+    def __post_init__(self):
+        """初始化時計算中垂線參數和法向量線參數"""
+        self._calculate_perpendicular_bisector()
+        self._calculate_normal_line()
+    
+    @property
+    def start(self) -> Optional[VoronoiVertex]:
+        """獲取起始頂點"""
+        return self._start
+    
+    @start.setter
+    def start(self, vertex: Optional[VoronoiVertex]):
+        """
+        設定起始頂點，自動維護頂點的 incident_edges 列表
+        """
+        # 從舊頂點移除此邊
+        if self._start and self in self._start.incident_edges:
+            self._start.incident_edges.remove(self)
         
-        # 邊生命值系統
-        self.life = 2  # 每條邊有2條命（對應兩個端點）
+        # 設定新頂點
+        self._start = vertex
         
-        # 新增：碰撞相關屬性
-        self.is_cross = False  # 標記是否被hyperplane碰撞
-        self.cross_point = None  # 記錄碰撞點
-        self.intersected_by_hyperplane = None  # 記錄被哪條hyperplane碰撞
+        # 加入新頂點的 incident_edges
+        if vertex and self not in vertex.incident_edges:
+            vertex.incident_edges.append(self)
+    
+    @property
+    def end(self) -> Optional[VoronoiVertex]:
+        """獲取結束頂點"""
+        return self._end
+    
+    @end.setter
+    def end(self, vertex: Optional[VoronoiVertex]):
+        """
+        設定結束頂點，自動維護頂點的 incident_edges 列表
+        """
+        # 從舊頂點移除此邊
+        if self._end and self in self._end.incident_edges:
+            self._end.incident_edges.remove(self)
         
-        # 外心信息
-        self.circumcenter = None  # 記錄外心位置
+        # 設定新頂點
+        self._end = vertex
+        
+        # 加入新頂點的 incident_edges
+        if vertex and self not in vertex.incident_edges:
+            vertex.incident_edges.append(self)
     
-    # ...existing code...
-    
-    def set_cross_info(self, cross_point, hyperplane):
-        """設置碰撞信息"""
-        self.is_cross = True
-        self.cross_point = cross_point
-        self.intersected_by_hyperplane = hyperplane
-    
-    def get_point_value_in_hyperplane_equation(self, point, hyperplane):
-        """計算點在hyperplane直線方程式中的值"""
-        if hyperplane.slope == float('inf'):
-            # 垂直線: x = c
-            # 方程式可以寫成 x - c = 0
-            c = hyperplane.midpoint.x
-            return point.x - c
-        else:
-            # 一般直線: y = mx + b，重寫為 mx - y + b = 0
-            m = hyperplane.slope
-            b = hyperplane.midpoint.y - m * hyperplane.midpoint.x
-            return m * point.x - point.y + b
-    
-    def _calculate_slope(self):
-        """計算中垂線的斜率"""
+    def _calculate_perpendicular_bisector(self):
+        """計算兩點的垂直平分線參數"""
+        # 計算中點
+        mid_x = (self.site1.x + self.site2.x) / 2
+        mid_y = (self.site1.y + self.site2.y) / 2
+        
+        # 計算原始線段的斜率
         dx = self.site2.x - self.site1.x
         dy = self.site2.y - self.site1.y
         
-        if dx == 0:
-            # 原線段垂直，中垂線水平，斜率為 0
-            return 0
-        elif dy == 0:
-            # 原線段水平，中垂線垂直，斜率為無限大
-            return float('inf')
+        # 處理垂直情況
+        if abs(dx) < 1e-9:  # 原始線段垂直，中垂線水平
+            self.is_vertical = False
+            self.slope = 0
+            self.intercept = mid_y
+            self.vertical_x = None
+        elif abs(dy) < 1e-9:  # 原始線段水平，中垂線垂直
+            self.is_vertical = True
+            self.vertical_x = mid_x
+            self.slope = None
+            self.intercept = None
         else:
-            # 中垂線斜率 = -(原線段斜率的倒數) = -dx/dy
-            return -dx / dy
+            # 一般情況：中垂線斜率 = -1 / 原始斜率
+            original_slope = dy / dx
+            self.slope = -1 / original_slope
+            self.is_vertical = False
+            # y - mid_y = slope * (x - mid_x)
+            # y = slope * x - slope * mid_x + mid_y
+            self.intercept = mid_y - self.slope * mid_x
+            self.vertical_x = None
     
-    def _calculate_midpoint(self):
-        """計算兩點的中點"""
-        mx = (self.site1.x + self.site2.x) / 2
-        my = (self.site1.y + self.site2.y) / 2
-        return Point(mx, my)
-
-    def set_start_vertex(self, vertex):
-        self.start_vertex = vertex
-        vertex.add_edge(self)
-
-    def set_end_vertex(self, vertex):
-        self.end_vertex = vertex
-        vertex.add_edge(self)
-
-    def set_infinite(self):
-        self.is_infinite = True
+    def _calculate_normal_line(self):
+        """
+        計算法向量線（通過 site1 和 site2 的直線）
+        方程式: ax + by + c = 0
+        用途：判斷點在中垂線的哪一側
+        """
+        # 法向量線就是通過 site1 和 site2 的直線
+        # 使用兩點式: (y - y1) / (y2 - y1) = (x - x1) / (x2 - x1)
+        # 整理成一般式: a*x + b*y + c = 0
+        
+        x1, y1 = self.site1.x, self.site1.y
+        x2, y2 = self.site2.x, self.site2.y
+        
+        # 向量 (x2-x1, y2-y1) 的法向量是 (y2-y1, -(x2-x1))
+        # 但我們要的是通過兩點的直線，所以用標準公式：
+        # (y2-y1)*x - (x2-x1)*y + (x2-x1)*y1 - (y2-y1)*x1 = 0
+        
+        self.normal_a = y2 - y1
+        self.normal_b = -(x2 - x1)
+        self.normal_c = (x2 - x1) * y1 - (y2 - y1) * x1
     
-    def get_slope_info(self):
-        """獲取斜率資訊"""
-        if self.slope == float('inf'):
-            return "垂直線（斜率無限大）"
-        elif self.slope == 0:
-            return "水平線（斜率為 0）"
+    def get_normal_line_value(self, x: float, y: float) -> float:
+        """
+        計算點 (x, y) 代入法向量線方程式的值
+        返回: a*x + b*y + c
+        
+        用途：判斷點在法向量線的哪一側
+        - 返回值 > 0: 點在法向量線的一側
+        - 返回值 < 0: 點在法向量線的另一側
+        - 返回值 = 0: 點在法向量線上
+        """
+        if self.normal_a is None or self.normal_b is None or self.normal_c is None:
+            raise ValueError("法向量線參數未初始化")
+        
+        return self.normal_a * x + self.normal_b * y + self.normal_c
+    
+    def get_midpoint(self) -> Tuple[float, float]:
+        """獲取兩站點的中點"""
+        return ((self.site1.x + self.site2.x) / 2, 
+                (self.site1.y + self.site2.y) / 2)
+    
+    def point_on_line(self, t: float) -> Tuple[float, float]:
+        """
+        獲取線上的點，參數化表示
+        t: 參數（0 表示中點，正負表示方向）
+        """
+        mid_x, mid_y = self.get_midpoint()
+        
+        if self.is_vertical:
+            return (self.vertical_x, mid_y + t)
         else:
-            return f"斜率: {self.slope:.4f}"
-    
-    def get_bisected_points(self):
-        """獲取被平分的兩個點"""
-        return (self.site1, self.site2)
-    
-    def get_line_equation(self):
-        """獲取中垂線方程式 y = mx + b 或 x = c"""
-        if self.slope == float('inf'):
-            # 垂直線: x = midpoint.x
-            return f"x = {self.midpoint.x}"
-        else:
-            # y = mx + b，其中 b = midpoint.y - slope * midpoint.x
-            b = self.midpoint.y - self.slope * self.midpoint.x
-            if b >= 0:
-                return f"y = {self.slope:.4f}x + {b:.4f}"
-            else:
-                return f"y = {self.slope:.4f}x - {abs(b):.4f}"
-    
-    def find_intersection(self, other_edge):
-        """找到兩條中垂線的交點"""
-        # 如果兩條線都是垂直線
-        if self.slope == float('inf') and other_edge.slope == float('inf'):
-            return None  # 平行線，無交點
-        
-        # 如果其中一條是垂直線
-        if self.slope == float('inf'):
-            x = self.midpoint.x
-            # 計算 other_edge 在 x 處的 y 值
-            b2 = other_edge.midpoint.y - other_edge.slope * other_edge.midpoint.x
-            y = other_edge.slope * x + b2
-            return Point(x, y)
-        
-        if other_edge.slope == float('inf'):
-            x = other_edge.midpoint.x
-            # 計算 self 在 x 處的 y 值
-            b1 = self.midpoint.y - self.slope * self.midpoint.x
-            y = self.slope * x + b1
-            return Point(x, y)
-        
-        # 兩條線都不是垂直線
-        # 計算 y = m1*x + b1 和 y = m2*x + b2 的交點
-        b1 = self.midpoint.y - self.slope * self.midpoint.x
-        b2 = other_edge.midpoint.y - other_edge.slope * other_edge.midpoint.x
-        
-        # 如果斜率相同，則平行
-        if abs(self.slope - other_edge.slope) < 1e-10:
-            return None
-        
-        # 求交點：m1*x + b1 = m2*x + b2 → x = (b2-b1)/(m1-m2)
-        x = (b2 - b1) / (self.slope - other_edge.slope)
-        y = self.slope * x + b1
-        
-        return Point(x, y)
-    
-    def is_point_between_vertices(self, point):
-        """檢查點是否在線段的兩個端點之間"""
-        if not self.start_vertex or not self.end_vertex:
-            return False
-        
-        # 檢查點是否在線段的範圍內
-        min_x = min(self.start_vertex.x, self.end_vertex.x)
-        max_x = max(self.start_vertex.x, self.end_vertex.x)
-        min_y = min(self.start_vertex.y, self.end_vertex.y)
-        max_y = max(self.start_vertex.y, self.end_vertex.y)
-        
-        # 給一點容差以避免浮點數精度問題
-        tolerance = 1e-6
-        return (min_x - tolerance <= point.x <= max_x + tolerance and 
-                min_y - tolerance <= point.y <= max_y + tolerance)
-
-
-    #計算中垂線
-    @staticmethod
-    def get_perpendicular_bisector_on_canvas(p1, p2, canvas_width=600, canvas_height=600):
-        # 計算中垂線的中點
-        mx = (p1.x + p2.x) / 2
-        my = (p1.y + p2.y) / 2
-        dx = p2.x - p1.x
-        dy = p2.y - p1.y
-
-        if dx == 0:
-            # 垂直線的中垂線是水平線
-            return (VoronoiVertex(0, my), VoronoiVertex(canvas_width, my))
-        elif dy == 0:
-            # 水平線的中垂線是垂直線
-            return (VoronoiVertex(mx, 0), VoronoiVertex(mx, canvas_height))
-        else:
-            slope = -dx / dy
-            points_on_canvas = []
-            # 與上邊界(y=0)和下邊界(y=canvas_height)求交
-            x_top = mx + (0 - my) / slope
-            x_bottom = mx + (canvas_height - my) / slope
-            if 0 <= x_top <= canvas_width:
-                points_on_canvas.append((x_top, 0))
-            if 0 <= x_bottom <= canvas_width:
-                points_on_canvas.append((x_bottom, canvas_height))
-            # 與左邊界(x=0)和右邊界(x=canvas_width)求交
-            y_left = my + slope * (0 - mx)
-            y_right = my + slope * (canvas_width - mx)
-            if 0 <= y_left <= canvas_height:
-                points_on_canvas.append((0, y_left))
-            if 0 <= y_right <= canvas_height:
-                points_on_canvas.append((canvas_width, y_right))
-            # 取兩個在畫布內的交點作為中垂線端點
-            if len(points_on_canvas) >= 2:
-                return (VoronoiVertex(*points_on_canvas[0]), VoronoiVertex(*points_on_canvas[1]))
-            elif len(points_on_canvas) == 1:
-                return (VoronoiVertex(mx, my), VoronoiVertex(*points_on_canvas[0]))
-            else:
-                return (VoronoiVertex(mx, my), VoronoiVertex(mx, my))
-
-    #計算無限制中垂線（延伸到很遠的距離）
-    @staticmethod
-    def get_perpendicular_bisector_unlimited(p1, p2, extension=2000):
-        """計算兩點之間的中垂線，延伸到指定距離"""
-        # 計算中垂線的中點
-        mx = (p1.x + p2.x) / 2
-        my = (p1.y + p2.y) / 2
-        dx = p2.x - p1.x
-        dy = p2.y - p1.y
-
-        if dx == 0:
-            # 垂直線的中垂線是水平線
-            return (VoronoiVertex(mx - extension, my), VoronoiVertex(mx + extension, my))
-        elif dy == 0:
-            # 水平線的中垂線是垂直線
-            return (VoronoiVertex(mx, my - extension), VoronoiVertex(mx, my + extension))
-        else:
-            # 計算中垂線的斜率（垂直於原線段）
-            slope = -dx / dy
+            # 沿著中垂線的方向向量
+            # 方向向量垂直於兩站點連線
+            dx = self.site2.x - self.site1.x
+            dy = self.site2.y - self.site1.y
+            length = math.sqrt(dx*dx + dy*dy)
             
-            # 計算方向向量（單位向量）
-            length = (1 + slope * slope) ** 0.5
-            unit_x = 1 / length
-            unit_y = slope / length
+            # 單位法向量（垂直方向）
+            nx = -dy / length
+            ny = dx / length
             
-            # 計算兩個延伸點
-            start_x = mx - extension * unit_x
-            start_y = my - extension * unit_y
-            end_x = mx + extension * unit_x
-            end_y = my + extension * unit_y
-            
-            return (VoronoiVertex(start_x, start_y), VoronoiVertex(end_x, end_y))
+            return (mid_x + t * nx, mid_y + t * ny)
+    
+    def intersect_with(self, other: 'VoronoiEdge') -> Optional[Tuple[float, float]]:
+        """
+        計算與另一條邊的交點
+        返回交點座標，如果平行則返回 None
+        """
+        # 兩條都是垂直線
+        if self.is_vertical and other.is_vertical:
+            return None  # 平行或重合
+        
+        # 只有 self 是垂直線
+        if self.is_vertical:
+            x = self.vertical_x
+            y = other.slope * x + other.intercept
+            return (x, y)
+        
+        # 只有 other 是垂直線
+        if other.is_vertical:
+            x = other.vertical_x
+            y = self.slope * x + self.intercept
+            return (x, y)
+        
+        # 都不是垂直線
+        # y = slope1 * x + intercept1
+        # y = slope2 * x + intercept2
+        if abs(self.slope - other.slope) < 1e-9:
+            return None  # 平行
+        
+        x = (other.intercept - self.intercept) / (self.slope - other.slope)
+        y = self.slope * x + self.intercept
+        return (x, y)
+    
+    def copy_snapshot(self) -> 'VoronoiEdge':
+        """
+        創建當前邊的快照（用於 step-by-step 顯示）
+        複製邊的當前狀態，包括端點位置
+        """
+        from copy import copy
+        # 創建一個新的 VoronoiEdge，但共享 site1 和 site2
+        snapshot = VoronoiEdge(
+            site1=self.site1,
+            site2=self.site2,
+            is_hyperplane=self.is_hyperplane,
+            is_infinite=self.is_infinite,
+            id=self.id
+        )
+        # 直接設置私有變數，避免觸發 property setter（快照不需要維護 incident_edges）
+        snapshot._start = copy(self.start) if self.start else None
+        snapshot._end = copy(self.end) if self.end else None
+        
+        # 複製數學參數（這些在 __post_init__ 會重新計算，但我們要保留當前值）
+        snapshot.slope = self.slope
+        snapshot.intercept = self.intercept
+        snapshot.is_vertical = self.is_vertical
+        snapshot.vertical_x = self.vertical_x
+        snapshot.normal_a = self.normal_a
+        snapshot.normal_b = self.normal_b
+        snapshot.normal_c = self.normal_c
+        return snapshot
+    
+    def __repr__(self):
+        hp = " [HP]" if self.is_hyperplane else ""
+        inf = " [INF]" if self.is_infinite else ""
+        return f"Edge({self.site1.id}-{self.site2.id}{hp}{inf})"
+    
+    def __hash__(self):
+        return hash((id(self.site1), id(self.site2)))
 
 
-# 主資料結構
+@dataclass
+class VoronoiCell:
+    """
+    Voronoi Cell（Voronoi 區域）
+    代表某個站點的勢力範圍
+    """
+    site: VoronoiSite  # 此 cell 對應的站點
+    vertices: List[VoronoiVertex] = field(default_factory=list)  # 構成此 cell 的頂點（按順序）
+    edges: List[VoronoiEdge] = field(default_factory=list)  # 構成此 cell 的邊
+
+
+@dataclass
+class ConvexHull:
+    """
+    凸包資料結構
+    用於 divide-conquer 過程中的合併操作
+    """
+    points: List[Point] = field(default_factory=list)  # 凸包上的點（按逆時針順序）
+    edges: List[Tuple[Point, Point]] = field(default_factory=list)  # 凸包的邊
+    
+    def add_point(self, point: Point):
+        """添加點到凸包"""
+        if point not in self.points:
+            self.points.append(point)
+    
+    def compute_edges(self):
+        """計算凸包的邊"""
+        self.edges = []
+        n = len(self.points)
+        for i in range(n):
+            self.edges.append((self.points[i], self.points[(i+1) % n]))
+    
+    def contains_point(self, point: Point) -> bool:
+        """檢查點是否在凸包內或邊上"""
+        if point in self.points:
+            return True
+        # TODO: 實作點在多邊形內的判斷
+        return False
+
+
+@dataclass
+class MergeStep:
+    """
+    記錄一次 merge 操作的狀態
+    用於 step-by-step 顯示
+    """
+    step_id: int  # 步驟編號
+    description: str  # 步驟描述
+    
+    # 當前狀態快照
+    left_sites: List[VoronoiSite] = field(default_factory=list)  # 左半邊的站點
+    right_sites: List[VoronoiSite] = field(default_factory=list)  # 右半邊的站點
+    left_edges: List[VoronoiEdge] = field(default_factory=list)  # 左半邊的邊
+    right_edges: List[VoronoiEdge] = field(default_factory=list)  # 右半邊的邊
+    
+    hyperplane: Optional[VoronoiEdge] = None  # 當前的分割線
+    left_hull: Optional[ConvexHull] = None  # 左半邊凸包
+    right_hull: Optional[ConvexHull] = None  # 右半邊凸包
+    merged_hull: Optional[ConvexHull] = None  # 合併後的凸包
+    
+    # 當前處理的關鍵點
+    current_edge: Optional[VoronoiEdge] = None  # 正在處理的邊
+    intersection_point: Optional[VoronoiVertex] = None  # 交點
+    
+    # 標記被修改/刪除的元素
+    modified_edges: Set[VoronoiEdge] = field(default_factory=set)
+    deleted_edges: Set[VoronoiEdge] = field(default_factory=set)
+    new_edges: Set[VoronoiEdge] = field(default_factory=set)
+
+
 class VoronoiDiagram:
-    def __init__(self):
-        self.points = []          # 點的列表
-        self.edges = []           # 中垂線的列表
-        self.vertices = []        # Voronoi vertices 的列表
-        self.point_to_edges = {}  # 點到中垂線的映射
-
-    def add_point(self, point):
-        self.points.append(point)
-        self.point_to_edges[point] = []
-
-    def add_edge(self, edge):
-        self.edges.append(edge)
-        # 更新點到中垂線的映射
-        self.point_to_edges[edge.site1].append(edge)
-        self.point_to_edges[edge.site2].append(edge)
-
-    def add_vertex(self, vertex):
-        self.vertices.append(vertex)
-
-    def extend(self,points):
-        pass
+    """
+    Voronoi Diagram 主類別
+    管理整個 Voronoi 圖的結構
+    """
     
-    def remove_edge_extension_beyond_point(self, edge, cut_point):
-        """移除邊在指定點之外的延伸部分"""
-        if not edge.start_vertex or not edge.end_vertex:
-            return
+    def __init__(self):
+        self.sites: List[VoronoiSite] = []  # 所有站點
+        self.vertices: List[VoronoiVertex] = []  # 所有 Voronoi 頂點
+        self.edges: List[VoronoiEdge] = []  # 所有邊
+        self.cells: List[VoronoiCell] = []  # 所有 cell
+        self.convex_hull: Optional[ConvexHull] = None  # 整體凸包
         
-        # 計算哪個端點離 cut_point 更遠
-        dist_to_start = ((cut_point.x - edge.start_vertex.x)**2 + 
-                        (cut_point.y - edge.start_vertex.y)**2) ** 0.5
-        dist_to_end = ((cut_point.x - edge.end_vertex.x)**2 + 
-                      (cut_point.y - edge.end_vertex.y)**2) ** 0.5
+        # Step-by-step 記錄
+        self.merge_steps: List[MergeStep] = []
+        self.current_step: int = -1  # -1 表示顯示完整結果
         
-        # 保留較近的端點，用 cut_point 替換較遠的端點
-        if dist_to_start > dist_to_end:
-            edge.start_vertex = VoronoiVertex(cut_point.x, cut_point.y)
-        else:
-            edge.end_vertex = VoronoiVertex(cut_point.x, cut_point.y)
-
+        # ID 計數器
+        self._site_id_counter: int = 0
+        self._edge_id_counter: int = 0
+        self._vertex_id_counter: int = 0
+    
+    def add_site(self, x: float, y: float) -> VoronoiSite:
+        """添加一個新的站點"""
+        site = VoronoiSite(x=x, y=y, id=self._site_id_counter)
+        self._site_id_counter += 1
+        self.sites.append(site)
+        return site
+    
+    def add_sites_from_list(self, points: List[Tuple[float, float]]):
+        """從座標列表批量添加站點"""
+        for x, y in points:
+            self.add_site(x, y)
+    
+    def create_edge(self, site1: VoronoiSite, site2: VoronoiSite, 
+                    is_hyperplane: bool = False) -> VoronoiEdge:
+        """創建一條新的 Voronoi 邊"""
+        edge = VoronoiEdge(
+            site1=site1,
+            site2=site2,
+            is_hyperplane=is_hyperplane,
+            id=self._edge_id_counter
+        )
+        self._edge_id_counter += 1
+        self.edges.append(edge)
+        
+        # 關聯到站點
+        site1.add_edge(edge)
+        site2.add_edge(edge)
+        
+        return edge
+    
+    def create_vertex(self, x: float, y: float, 
+                     sites: Optional[List[VoronoiSite]] = None) -> VoronoiVertex:
+        """創建一個新的 Voronoi 頂點"""
+        vertex = VoronoiVertex(
+            x=x,
+            y=y,
+            id=self._vertex_id_counter,
+            sites=sites if sites else []
+        )
+        self._vertex_id_counter += 1
+        self.vertices.append(vertex)
+        return vertex
+    
+    def remove_edge(self, edge: VoronoiEdge):
+        """移除一條邊"""
+        if edge in self.edges:
+            self.edges.remove(edge)
+            edge.site1.remove_edge(edge)
+            edge.site2.remove_edge(edge)
+            
+            # 從頂點的 incident_edges 中移除
+            if edge.start and edge in edge.start.incident_edges:
+                edge.start.incident_edges.remove(edge)
+            if edge.end and edge in edge.end.incident_edges:
+                edge.end.incident_edges.remove(edge)
+    
+    def remove_orphaned_edges(self, affected_vertices: Optional[List[VoronoiVertex]] = None) -> List[VoronoiEdge]:
+        """
+        移除孤立的邊（連接到度數為 1 的頂點的邊）
+        修正版：使用無窮迴圈反覆檢查，直到沒有任何邊被移除為止，
+        解決了「因為標記已檢查而漏掉新產生的孤立邊」的問題。
+        
+        檢查條件：
+        1. 必須是 Voronoi 頂點（不能是站點）
+        2. 度數為 1（是死胡同）
+        3. 是可被孤立的類型（外心或交匯點）
+        
+        Args:
+            affected_vertices: 受影響的頂點列表（此參數被忽略，總是檢查所有頂點以確保清理乾淨）
+            
+        Returns:
+            被移除的邊列表
+        """
+        all_removed_edges = []
+        
+        # 持續迴圈直到系統穩定（沒有新的邊被移除）
+        while True:
+            removed_in_this_pass = []
+            
+            # 建立要檢查的頂點列表
+            # 注意：這裡總是檢查所有頂點，以確保清理乾淨。
+            # 雖然效率稍微低一點，但對於 Voronoi 的正確性至關重要。
+            vertices_to_check = list(self.vertices)
+            
+            for vertex in vertices_to_check:
+                # 檢查條件：
+                # 1. 必須是 Voronoi 頂點（不能是站點）
+                # 2. 度數為 1（是死胡同）
+                # 3. 是可被孤立的類型（外心或交匯點）
+                if vertex.point_type == PointType.VORONOI_VERTEX and \
+                   vertex.degree() == 1 and \
+                   vertex.is_orphanable():
+                    
+                    # 取得這條唯一的邊
+                    edge = vertex.incident_edges[0]
+                    
+                    # 記錄日誌（可選）
+                    # print(f"  [清理] 移除孤立邊: {edge} 連接頂點 ({vertex.x:.1f}, {vertex.y:.1f})")
+                    
+                    # 移除邊
+                    self.remove_edge(edge)
+                    removed_in_this_pass.append(edge)
+            
+            # 如果這一輪沒有移除任何邊，表示清理完成，跳出迴圈
+            if not removed_in_this_pass:
+                break
+                
+            # 將這一輪移除的邊加入總列表
+            all_removed_edges.extend(removed_in_this_pass)
+            
+            # 繼續下一輪迴圈...
+            # 因為剛剛移除了邊，某些頂點的度數可能從 2 變成了 1，
+            # 下一輪迴圈就會抓到它們並繼續清理。
+            
+        if all_removed_edges:
+            print(f"  [總結] 共清除了 {len(all_removed_edges)} 條連鎖孤立邊")
+            
+        return all_removed_edges
+    
+    def clear(self):
+        """清空所有資料"""
+        self.sites.clear()
+        self.vertices.clear()
+        self.edges.clear()
+        self.cells.clear()
+        self.merge_steps.clear()
+        self.convex_hull = None
+        self.current_step = -1
+        self._site_id_counter = 0
+        self._edge_id_counter = 0
+        self._vertex_id_counter = 0
+    
+    def get_step(self, step_index: int) -> Optional[MergeStep]:
+        """獲取特定步驟的狀態"""
+        if 0 <= step_index < len(self.merge_steps):
+            return self.merge_steps[step_index]
+        return None
+    
+    def add_merge_step(self, step: MergeStep):
+        """記錄一個 merge 步驟"""
+        self.merge_steps.append(step)
+    
+    def __repr__(self):
+        return f"VoronoiDiagram(sites={len(self.sites)}, edges={len(self.edges)}, vertices={len(self.vertices)})"
 
